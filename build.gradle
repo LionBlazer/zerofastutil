@@ -33,6 +33,335 @@ def testDirName = "test"
 def generatedMarker = file("${srcDirName}/it/unimi/dsi/fastutil/objects/Object2ObjectOpenHashMap.java")
 def fallbackMainSourcesPath = "${buildDir}/generated/sources/fallbackMain"
 def useLocalGeneratedSources = generatedMarker.exists()
+def openHashMapDriverSuffixes = [
+	"OpenHashMap.java",
+	"OpenCustomHashMap.java",
+	"LinkedOpenHashMap.java",
+	"LinkedOpenCustomHashMap.java"
+]
+
+def buildAllocFreeIteratorClassName = { String ownerClass ->
+	final String baseName
+	final String variantSuffix
+	if (ownerClass.endsWith("LinkedOpenCustomHashMap")) {
+		baseName = ownerClass.substring(0, ownerClass.length() - "LinkedOpenCustomHashMap".length())
+		variantSuffix = "LinkedCustom"
+	} else if (ownerClass.endsWith("LinkedOpenHashMap")) {
+		baseName = ownerClass.substring(0, ownerClass.length() - "LinkedOpenHashMap".length())
+		variantSuffix = "Linked"
+	} else if (ownerClass.endsWith("OpenCustomHashMap")) {
+		baseName = ownerClass.substring(0, ownerClass.length() - "OpenCustomHashMap".length())
+		variantSuffix = "Custom"
+	} else if (ownerClass.endsWith("OpenHashMap")) {
+		baseName = ownerClass.substring(0, ownerClass.length() - "OpenHashMap".length())
+		variantSuffix = ""
+	} else {
+		throw new GradleException("Unsupported OpenHashMap owner class: ${ownerClass}")
+	}
+
+	if (baseName == "Object2Object" && variantSuffix.isEmpty()) {
+		return "AllocFreeEntryIterator"
+	}
+	return "AllocFreeEntryIterator${baseName}${variantSuffix}"
+}
+
+def isGeneratedOpenHashMapFile = { File javaFile ->
+	def name = javaFile.name
+	name.contains("2") && openHashMapDriverSuffixes.any { name.endsWith(it) }
+}
+
+def parseOpenHashMapMetadata = { File javaFile ->
+	String source = javaFile.getText("UTF-8")
+	final String ownerClass = javaFile.name.substring(0, javaFile.name.length() - ".java".length())
+	final boolean linked = javaFile.name.contains("LinkedOpen")
+	final String iteratorClass = buildAllocFreeIteratorClassName(ownerClass)
+
+	def packageMatcher = (source =~ /(?m)^package\s+([a-zA-Z0-9_.]+);/)
+	if (!packageMatcher.find()) {
+		throw new GradleException("Cannot find package declaration in ${javaFile}")
+	}
+	final String packageName = packageMatcher.group(1)
+
+	def classDeclMatcher = (source =~ ("public class\\s+" + java.util.regex.Pattern.quote(ownerClass) + "\\s*(<[^>]+>)?\\s+extends"))
+	if (!classDeclMatcher.find()) {
+		throw new GradleException("Cannot find class declaration for ${ownerClass} in ${javaFile}")
+	}
+	final String typeDecl = classDeclMatcher.group(1) ?: ""
+
+	String typeArgs = ""
+	if (typeDecl) {
+		def names = typeDecl.substring(1, typeDecl.length() - 1)
+				.split(",")
+				.collect { part ->
+					part.trim()
+							.replaceAll(/\s+extends\s+.*$/, "")
+							.replaceAll(/\s+super\s+.*$/, "")
+							.trim()
+				}
+		typeArgs = "<" + names.join(", ") + ">"
+	}
+	final String ownerTypeUse = ownerClass + typeArgs
+	final String iteratorTypeUse = iteratorClass + typeArgs
+
+	def entryMatcher = (source =~ /final class MapEntry implements\s+(.+?),\s*Map\.Entry</)
+	if (!entryMatcher.find()) {
+		throw new GradleException("Cannot find MapEntry declaration in ${javaFile}")
+	}
+	final String entryType = entryMatcher.group(1).trim()
+
+	String keyType = null
+	String keyIsNullExpression = null
+	if (!linked) {
+		def keyTypeMatcher = (source =~ /protected transient ([^;]+?) key;/)
+		if (!keyTypeMatcher.find()) {
+			throw new GradleException("Cannot find key field type in ${javaFile}")
+		}
+		keyType = keyTypeMatcher.group(1).trim()
+
+		def keyNullMatcher = (source =~ /if \(!(.+)\) return last = pos;/)
+		if (!keyNullMatcher.find()) {
+			throw new GradleException("Cannot find key null-check expression in ${javaFile}")
+		}
+		keyIsNullExpression = keyNullMatcher.group(1).trim()
+	}
+
+	return [
+		source: source,
+		ownerClass: ownerClass,
+		linked: linked,
+		packageName: packageName,
+		typeDecl: typeDecl,
+		typeArgs: typeArgs,
+		ownerTypeUse: ownerTypeUse,
+		entryType: entryType,
+		iteratorClass: iteratorClass,
+		iteratorTypeUse: iteratorTypeUse,
+		keyType: keyType,
+		keyIsNullExpression: keyIsNullExpression
+	]
+}
+
+def buildAllocFreeIteratorClassSource = { Map meta ->
+	final String core = meta.linked ? """
+		private static final int NEXT_UNKNOWN = Integer.MIN_VALUE;
+		private static final int NEXT_NONE = -1;
+
+		private final ${meta.ownerTypeUse} owner;
+		private final ${meta.ownerTypeUse}.MapEntry entry;
+
+		private boolean inUse;
+		private int expectedSize;
+		private int nextIndex = NEXT_UNKNOWN;
+		private int scanNext;
+
+		public ${meta.iteratorClass}(final ${meta.ownerTypeUse} owner) {
+			this.owner = owner;
+			this.entry = owner.new MapEntry();
+		}
+
+		boolean isOwner(final ${meta.ownerTypeUse} map) {
+			return owner == map;
+		}
+
+		void open() {
+			if (inUse) throw new IllegalStateException("Iterator already in use.");
+			inUse = true;
+			expectedSize = owner.size;
+			nextIndex = NEXT_UNKNOWN;
+			entry.index = -1;
+			scanNext = owner.first;
+		}
+
+		private void ensureOpenAndUnmodified() {
+			if (!inUse) throw new IllegalStateException("Iterator is not in use.");
+			if (expectedSize != owner.size) throw new IllegalStateException("Map was structurally modified during alloc-free iteration.");
+		}
+
+		private void computeNext() {
+			if (nextIndex != NEXT_UNKNOWN) return;
+			if (scanNext == -1) {
+				nextIndex = NEXT_NONE;
+				return;
+			}
+			nextIndex = scanNext;
+			scanNext = (int)owner.link[scanNext];
+		}
+
+		@Override
+		public boolean hasNext() {
+			ensureOpenAndUnmodified();
+			computeNext();
+			return nextIndex != NEXT_NONE;
+		}
+
+		@Override
+		public ${meta.ownerTypeUse}.MapEntry next() {
+			ensureOpenAndUnmodified();
+			computeNext();
+			if (nextIndex == NEXT_NONE) throw new NoSuchElementException();
+			entry.index = nextIndex;
+			nextIndex = NEXT_UNKNOWN;
+			return entry;
+		}
+
+		@Override
+		public void remove() {
+			throw new UnsupportedOperationException("remove");
+		}
+
+		@Override
+		public java.util.Iterator<${meta.entryType}> iterator() {
+			ensureOpenAndUnmodified();
+			return this;
+		}
+
+		@Override
+		public void close() {
+			if (!inUse) throw new IllegalStateException("Iterator is not in use.");
+			inUse = false;
+			nextIndex = NEXT_UNKNOWN;
+			entry.index = -1;
+		}
+""" : """
+		private static final int NEXT_UNKNOWN = Integer.MIN_VALUE;
+		private static final int NEXT_NONE = -1;
+
+		private final ${meta.ownerTypeUse} owner;
+		private final ${meta.ownerTypeUse}.MapEntry entry;
+
+		private boolean inUse;
+		private int expectedSize;
+		private int nextIndex = NEXT_UNKNOWN;
+		private int scanPos;
+		private boolean scanNullKey;
+
+		public ${meta.iteratorClass}(final ${meta.ownerTypeUse} owner) {
+			this.owner = owner;
+			this.entry = owner.new MapEntry();
+		}
+
+		boolean isOwner(final ${meta.ownerTypeUse} map) {
+			return owner == map;
+		}
+
+		void open() {
+			if (inUse) throw new IllegalStateException("Iterator already in use.");
+			inUse = true;
+			expectedSize = owner.size;
+			nextIndex = NEXT_UNKNOWN;
+			entry.index = -1;
+			scanPos = owner.n;
+			scanNullKey = owner.containsNullKey;
+		}
+
+		private void ensureOpenAndUnmodified() {
+			if (!inUse) throw new IllegalStateException("Iterator is not in use.");
+			if (expectedSize != owner.size) throw new IllegalStateException("Map was structurally modified during alloc-free iteration.");
+		}
+
+		private void computeNext() {
+			if (nextIndex != NEXT_UNKNOWN) return;
+			if (scanNullKey) {
+				scanNullKey = false;
+				nextIndex = owner.n;
+				return;
+			}
+			final ${meta.keyType} key = owner.key;
+			while (scanPos != 0) {
+				final int pos = --scanPos;
+				if (!(${meta.keyIsNullExpression})) {
+					nextIndex = pos;
+					return;
+				}
+			}
+			nextIndex = NEXT_NONE;
+		}
+
+		@Override
+		public boolean hasNext() {
+			ensureOpenAndUnmodified();
+			computeNext();
+			return nextIndex != NEXT_NONE;
+		}
+
+		@Override
+		public ${meta.ownerTypeUse}.MapEntry next() {
+			ensureOpenAndUnmodified();
+			computeNext();
+			if (nextIndex == NEXT_NONE) throw new NoSuchElementException();
+			entry.index = nextIndex;
+			nextIndex = NEXT_UNKNOWN;
+			return entry;
+		}
+
+		@Override
+		public void remove() {
+			throw new UnsupportedOperationException("remove");
+		}
+
+		@Override
+		public java.util.Iterator<${meta.entryType}> iterator() {
+			ensureOpenAndUnmodified();
+			return this;
+		}
+
+		@Override
+		public void close() {
+			if (!inUse) throw new IllegalStateException("Iterator is not in use.");
+			inUse = false;
+			nextIndex = NEXT_UNKNOWN;
+			entry.index = -1;
+		}
+"""
+
+	return """package ${meta.packageName};
+
+import java.util.NoSuchElementException;
+
+/** Reusable, allocation-free entry iterator for {@link ${meta.ownerClass}}. */
+public final class ${meta.iteratorClass}${meta.typeDecl} implements java.util.Iterator<${meta.entryType}>, AutoCloseable, Iterable<${meta.entryType}> {
+${core}
+}
+"""
+}
+
+def injectAllocFreeIteratorApi = { File javaFile, Map meta ->
+	String source = meta.source
+	if (source.contains("createAllocFreeIterator()") && source.contains(meta.iteratorClass)) {
+		return false
+	}
+
+	final String allocFreeMethods = """
+	/** Creates a reusable allocation-free entry iterator instance. */
+	public ${meta.iteratorTypeUse} createAllocFreeIterator() {
+		return new ${meta.iteratorTypeUse}(this);
+	}
+
+	/** Opens an allocation-free iteration session on a reusable iterator.
+	 *
+	 * @param iterator reusable iterator created by {@link #createAllocFreeIterator()}.
+	 * @return the same iterator, opened for iteration.
+	 * @throws NullPointerException if {@code iterator} is {@code null}.
+	 * @throws IllegalArgumentException if {@code iterator} belongs to another map instance.
+	 * @throws IllegalStateException if {@code iterator} is already in use.
+	 */
+	public ${meta.iteratorTypeUse} iterateEntries(final ${meta.iteratorTypeUse} iterator) {
+		if (iterator == null) throw new NullPointerException("iterator");
+		if (! iterator.isOwner(this)) throw new IllegalArgumentException("Iterator was created for another map instance.");
+		iterator.open();
+		return iterator;
+	}
+"""
+
+	final int marker = source.indexOf("\n\tprivate abstract class MapIterator<")
+	if (marker < 0) {
+		throw new GradleException("Cannot find MapIterator section in ${javaFile}")
+	}
+
+	source = source.substring(0, marker) + "\n\n" + allocFreeMethods + "\n" + source.substring(marker)
+	javaFile.write(source, "UTF-8")
+	return true
+}
 
 java {
 	sourceCompatibility = JavaVersion.VERSION_1_8
@@ -74,6 +403,22 @@ tasks.register("prepareFallbackSources", Sync) {
 		}
 	}
 	includeEmptyDirs = false
+	doLast {
+		int patched = 0
+		int generated = 0
+		fileTree(destinationDir).matching { include("**/*.java") }.files.each { File javaFile ->
+			if (isGeneratedOpenHashMapFile(javaFile)) {
+				final Map meta = parseOpenHashMapMetadata(javaFile)
+				if (injectAllocFreeIteratorApi(javaFile, meta)) {
+					patched++
+				}
+				final File iteratorFile = new File(javaFile.parentFile, "${meta.iteratorClass}.java")
+				iteratorFile.write(buildAllocFreeIteratorClassSource(meta), "UTF-8")
+				generated++
+			}
+		}
+		logger.lifecycle("Injected allocation-free iterator API into ${patched} generated OpenHashMap classes and generated ${generated} iterator classes.")
+	}
 }
 
 sourceSets {
