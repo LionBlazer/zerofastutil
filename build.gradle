@@ -31,7 +31,7 @@ if (localSecretsFile.exists()) {
 def srcDirName = "src"
 def testDirName = "test"
 def generatedMarker = file("${srcDirName}/it/unimi/dsi/fastutil/objects/Object2ObjectOpenHashMap.java")
-def mergedMainSourcesPath = "${buildDir}/generated/sources/main"
+def fallbackMainSourcesPath = "${buildDir}/generated/sources/fallbackMain"
 def useLocalGeneratedSources = generatedMarker.exists()
 
 java {
@@ -57,24 +57,33 @@ dependencies {
 	}
 }
 
-tasks.register("prepareMainSources", Sync) {
+tasks.register("prepareFallbackSources", Sync) {
 	group = "build setup"
-	description = "Prepare full main sources for Gradle-only build."
-	into(mergedMainSourcesPath)
+	description = "Prepare missing generated sources from upstream fastutil sources."
+	onlyIf { !useLocalGeneratedSources }
+	into(fallbackMainSourcesPath)
 	duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-	// Copy local sources first so they win over upstream fallback sources.
-	from(srcDirName)
-	if (!useLocalGeneratedSources) {
-		from({
-			zipTree(configurations.fastutilSources.singleFile)
-		})
+	from({
+		zipTree(configurations.fastutilSources.singleFile)
+	}) {
+		include("**/*.java")
+		eachFile { details ->
+			if (file("${srcDirName}/${details.path}").exists()) {
+				details.exclude()
+			}
+		}
 	}
 	includeEmptyDirs = false
 }
 
 sourceSets {
 	main {
-		java.setSrcDirs([mergedMainSourcesPath])
+		if (useLocalGeneratedSources) {
+			java.setSrcDirs([srcDirName])
+		} else {
+			// Keep src as source root in IDE and add fallback-generated type-specific classes.
+			java.setSrcDirs([srcDirName, fallbackMainSourcesPath])
+		}
 	}
 	test {
 		java.setSrcDirs([testDirName])
@@ -87,17 +96,23 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 tasks.named("compileJava") {
-	dependsOn(tasks.named("prepareMainSources"))
+	if (!useLocalGeneratedSources) {
+		dependsOn(tasks.named("prepareFallbackSources"))
+	}
 }
 
 tasks.named("javadoc", Javadoc) {
-	dependsOn(tasks.named("prepareMainSources"))
+	if (!useLocalGeneratedSources) {
+		dependsOn(tasks.named("prepareFallbackSources"))
+	}
 	options.encoding = "UTF-8"
 	options.addStringOption("Xdoclint:none", "-quiet")
 }
 
 tasks.named("sourcesJar", Jar) {
-	dependsOn(tasks.named("prepareMainSources"))
+	if (!useLocalGeneratedSources) {
+		dependsOn(tasks.named("prepareFallbackSources"))
+	}
 }
 
 tasks.named("jar", Jar) {
