@@ -1,7 +1,7 @@
 # Welcome to `fastutil`!
 
-[![Maven Central](https://img.shields.io/maven-central/v/it.unimi.dsi/fastutil.svg?label=Maven%20Central)](https://search.maven.org/search?q=g:%22it.unimi.dsi%22%20AND%20a:%22fastutil%22)
-[![javadoc](https://javadoc.io/badge2/it.unimi.dsi/fastutil/javadoc.svg)](https://javadoc.io/doc/it.unimi.dsi/fastutil)
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.lionblazer/zerofastutil.svg?label=Maven%20Central)](https://search.maven.org/search?q=g:%22io.github.lionblazer%22%20AND%20a:%22zerofastutil%22)
+[![javadoc](https://javadoc.io/badge2/io.github.lionblazer/zerofastutil/javadoc.svg)](https://javadoc.io/doc/io.github.lionblazer/zerofastutil)
 
 ## Introduction
 
@@ -42,18 +42,60 @@ uses and build a minimized jar only containing the necessary classes.
 
 ## Building
 
-First, you have to `make sources` to get the actual Java sources.
-After that, `ant jar` will generate a single jar file; `ant javadoc` will
-generate the API documentation; `ant junit` will run the unit tests.
+The project builds with Gradle only.
 
-If you want to obtain the two jars above, you have to run the script
-`split.sh`, and then `ant osgi-rest`.
+- Build and test: `./gradlew clean build`
+- Build only: `./gradlew assemble`
+- Run tests: `./gradlew test`
+- Generate docs jar: `./gradlew javadocJar`
+- Create distribution artifacts (`jar`, `sources`, `javadoc`) in `dist/lib`: `./gradlew dist`
 
-The Java sources are generated using a C preprocessor. The `gencsource.sh`
-script reads in a driver file, that is, a Java source that uses some
-preprocessor-defined symbols and some conditional compilation, and produces a
-(fake) C source, which includes the driver code and some definitions that
-customize the environment.
+During build, Gradle prepares full sources automatically. If type-specific
+generated classes are already present in `src/`, local sources are used as-is.
+Otherwise, Gradle resolves the matching `fastutil` sources artifact for the
+current version and merges local fork changes on top.
+
+## Publishing to Maven Central
+
+Coordinates are configured for this fork:
+
+- Group: `io.github.lionblazer`
+- Artifact: `zerofastutil`
+
+Prerequisites:
+
+- Sonatype Central Portal namespace must be verified.
+- Create a **User Token** in Central Portal.
+- Have a GPG private key for artifact signing.
+
+Put secrets in `~/.gradle/gradle.properties`:
+
+```properties
+sonatypeUsername=<Central Portal User Token username>
+sonatypePassword=<Central Portal User Token password>
+signingKey=<ASCII-armored private key; use \n for line breaks>
+signingPassword=<GPG key passphrase>
+```
+
+Publish a release:
+
+```bash
+./gradlew clean publishReleaseToCentral
+```
+
+Publish a snapshot (set version to `*-SNAPSHOT` first):
+
+```bash
+./gradlew clean publishToSonatype
+```
+
+Detailed checklist: see `PUBLISHING.md`.
+
+Quick runtime marker after publish:
+
+```java
+System.out.println(it.unimi.dsi.fastutil.ZeroFastUtilInfo.marker());
+```
 
 ## Speed
 
