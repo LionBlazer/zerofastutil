@@ -1,5 +1,7 @@
 # Welcome to `fastutil`!
 
+This repository is a fork (`zerofastutil`) that adds allocation-free reusable iterators for fast hash-map entry iteration.
+
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.lionblazer/zerofastutil.svg?label=Maven%20Central)](https://search.maven.org/search?q=g:%22io.github.lionblazer%22%20AND%20a:%22zerofastutil%22)
 [![javadoc](https://javadoc.io/badge2/io.github.lionblazer/zerofastutil/javadoc.svg)](https://javadoc.io/doc/io.github.lionblazer/zerofastutil)
 
@@ -39,63 +41,6 @@ your repo, local maven repo, etc.) using the `find-deps.sh` shell script.
 It has mild prerequisites, as only the `jdeps` tool is required (bundled
 with JDK 8). It can be used to identify all fastutil classes your project
 uses and build a minimized jar only containing the necessary classes.
-
-## Building
-
-The project builds with Gradle only.
-
-- Build and test: `./gradlew clean build`
-- Build only: `./gradlew assemble`
-- Run tests: `./gradlew test`
-- Generate docs jar: `./gradlew javadocJar`
-- Create distribution artifacts (`jar`, `sources`, `javadoc`) in `dist/lib`: `./gradlew dist`
-
-During build, Gradle prepares full sources automatically. If type-specific
-generated classes are already present in `src/`, local sources are used as-is.
-Otherwise, Gradle resolves the matching `fastutil` sources artifact for the
-current version and merges local fork changes on top.
-
-## Publishing to Maven Central
-
-Coordinates are configured for this fork:
-
-- Group: `io.github.lionblazer`
-- Artifact: `zerofastutil`
-
-Prerequisites:
-
-- Sonatype Central Portal namespace must be verified.
-- Create a **User Token** in Central Portal.
-- Have a GPG private key for artifact signing.
-
-Put secrets in `~/.gradle/gradle.properties`:
-
-```properties
-sonatypeUsername=<Central Portal User Token username>
-sonatypePassword=<Central Portal User Token password>
-signingKey=<ASCII-armored private key; use \n for line breaks>
-signingPassword=<GPG key passphrase>
-```
-
-Publish a release:
-
-```bash
-./gradlew clean publishReleaseToCentral
-```
-
-Publish a snapshot (set version to `*-SNAPSHOT` first):
-
-```bash
-./gradlew clean publishToSonatype
-```
-
-Detailed checklist: see `PUBLISHING.md`.
-
-Quick runtime marker after publish:
-
-```java
-System.out.println(it.unimi.dsi.fastutil.ZeroFastUtilInfo.marker());
-```
 
 ## Speed
 
