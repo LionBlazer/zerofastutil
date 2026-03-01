@@ -39,6 +39,24 @@ def openHashMapDriverSuffixes = [
 	"LinkedOpenHashMap.java",
 	"LinkedOpenCustomHashMap.java"
 ]
+def openHashSetDriverSuffixes = [
+	"OpenHashSet.java",
+	"OpenCustomHashSet.java",
+	"LinkedOpenHashSet.java",
+	"LinkedOpenCustomHashSet.java",
+	"OpenHashBigSet.java"
+]
+
+def primitiveToBoxedType = [
+	"boolean": "Boolean",
+	"byte": "Byte",
+	"short": "Short",
+	"char": "Character",
+	"int": "Integer",
+	"long": "Long",
+	"float": "Float",
+	"double": "Double"
+]
 
 def buildAllocFreeIteratorClassName = { String ownerClass ->
 	final String baseName
@@ -363,6 +381,475 @@ def injectAllocFreeIteratorApi = { File javaFile, Map meta ->
 	return true
 }
 
+def extractBracedBody = { String source, int openingBraceIndex ->
+	int depth = 0
+	for (int i = openingBraceIndex; i < source.length(); i++) {
+		final char ch = source.charAt(i)
+		if (ch == '{') {
+			depth++
+		} else if (ch == '}') {
+			depth--
+			if (depth == 0) {
+				return [
+					body: source.substring(openingBraceIndex + 1, i),
+					closingIndex: i
+				]
+			}
+		}
+	}
+	throw new GradleException("Unbalanced braces while parsing generated source.")
+}
+
+def buildAllocFreeSetIteratorClassName = { String ownerClass ->
+	final String baseName
+	final String variantSuffix
+	if (ownerClass.endsWith("LinkedOpenCustomHashSet")) {
+		baseName = ownerClass.substring(0, ownerClass.length() - "LinkedOpenCustomHashSet".length())
+		variantSuffix = "LinkedCustom"
+	} else if (ownerClass.endsWith("LinkedOpenHashSet")) {
+		baseName = ownerClass.substring(0, ownerClass.length() - "LinkedOpenHashSet".length())
+		variantSuffix = "Linked"
+	} else if (ownerClass.endsWith("OpenCustomHashSet")) {
+		baseName = ownerClass.substring(0, ownerClass.length() - "OpenCustomHashSet".length())
+		variantSuffix = "Custom"
+	} else if (ownerClass.endsWith("OpenHashBigSet")) {
+		baseName = ownerClass.substring(0, ownerClass.length() - "OpenHashBigSet".length())
+		variantSuffix = "Big"
+	} else if (ownerClass.endsWith("OpenHashSet")) {
+		baseName = ownerClass.substring(0, ownerClass.length() - "OpenHashSet".length())
+		variantSuffix = ""
+	} else {
+		throw new GradleException("Unsupported OpenHashSet owner class: ${ownerClass}")
+	}
+
+	if (baseName == "Object" && variantSuffix.isEmpty()) {
+		return "AllocFreeIterator"
+	}
+	return "AllocFreeIterator${baseName}${variantSuffix}"
+}
+
+def isGeneratedOpenHashSetFile = { File javaFile ->
+	final String name = javaFile.name
+	!name.contains("2") && openHashSetDriverSuffixes.any { name.endsWith(it) }
+}
+
+def parseOpenHashSetMetadata = { File javaFile ->
+	final String source = javaFile.getText("UTF-8")
+	final String ownerClass = javaFile.name.substring(0, javaFile.name.length() - ".java".length())
+	final boolean linked = ownerClass.contains("LinkedOpen")
+	final boolean big = ownerClass.endsWith("OpenHashBigSet")
+	final String iteratorClass = buildAllocFreeSetIteratorClassName(ownerClass)
+
+	def packageMatcher = (source =~ /(?m)^package\s+([a-zA-Z0-9_.]+);/)
+	if (!packageMatcher.find()) {
+		throw new GradleException("Cannot find package declaration in ${javaFile}")
+	}
+	final String packageName = packageMatcher.group(1)
+
+	def classDeclMatcher = (source =~ ("public class\\s+" + java.util.regex.Pattern.quote(ownerClass) + "\\s*(<[^>]+>)?\\s+extends"))
+	if (!classDeclMatcher.find()) {
+		throw new GradleException("Cannot find class declaration for ${ownerClass} in ${javaFile}")
+	}
+	final String typeDecl = classDeclMatcher.group(1) ?: ""
+
+	String typeArgs = ""
+	if (typeDecl) {
+		def names = typeDecl.substring(1, typeDecl.length() - 1)
+				.split(",")
+				.collect { part ->
+					part.trim()
+							.replaceAll(/\s+extends\s+.*$/, "")
+							.replaceAll(/\s+super\s+.*$/, "")
+							.trim()
+				}
+		typeArgs = "<" + names.join(", ") + ">"
+	}
+
+	final String ownerTypeUse = ownerClass + typeArgs
+	final String iteratorTypeUse = iteratorClass + typeArgs
+
+	def setIteratorMatcher = (source =~ /private(?:\s+final)?\s+class\s+SetIterator\s+implements\s+([^\{]+)\{/)
+	if (!setIteratorMatcher.find()) {
+		throw new GradleException("Cannot find SetIterator declaration in ${javaFile}")
+	}
+	final String setIteratorInterfaceRaw = setIteratorMatcher.group(1).trim()
+	final int setIteratorOpeningBrace = source.indexOf('{', setIteratorMatcher.start())
+	if (setIteratorOpeningBrace < 0) {
+		throw new GradleException("Cannot find SetIterator opening brace in ${javaFile}")
+	}
+	final String setIteratorBody = extractBracedBody(source, setIteratorOpeningBrace).body
+	final String iteratorInterface = setIteratorInterfaceRaw.replace("ListIterator", "Iterator").trim()
+
+	def nextMethodMatcher = (setIteratorBody =~ /@Override\s+public\s+([A-Za-z0-9_<>, ?]+)\s+(next[A-Za-z0-9_]*)\(\)\s*\{/)
+	if (!nextMethodMatcher.find()) {
+		throw new GradleException("Cannot find next* method in SetIterator for ${javaFile}")
+	}
+	final String nextReturnType = nextMethodMatcher.group(1).trim()
+	final String nextMethod = nextMethodMatcher.group(2).trim()
+	final String iterableType = nextMethod == "next" ? nextReturnType : (primitiveToBoxedType[nextReturnType] ?: nextReturnType)
+
+	String keyType = null
+	String keyIsNullExpression = null
+	String bigElementType = null
+	String nullKeyReturnExpression = "owner.key[owner.n]"
+	if (!linked) {
+		def keyTypeMatcher = (source =~ /protected transient ([^;]+?) key;/)
+		if (!keyTypeMatcher.find()) {
+			throw new GradleException("Cannot find key field type in ${javaFile}")
+		}
+		keyType = keyTypeMatcher.group(1).trim()
+
+		def keyNullMatcher = (setIteratorBody =~ /if \(!(.+?)\)\s*(?:return|\{)/)
+		while (keyNullMatcher.find()) {
+			final String candidate = keyNullMatcher.group(1).trim()
+			if (candidate.contains("key[pos]") || (candidate =~ /(^|[^A-Za-z0-9_])k([^A-Za-z0-9_]|$)/).find()) {
+				keyIsNullExpression = candidate
+				break
+			}
+		}
+		if (!keyIsNullExpression) {
+			throw new GradleException("Cannot find key null-check expression in SetIterator for ${javaFile}")
+		}
+
+		if (big) {
+			if (!keyType.endsWith("[][]")) {
+				throw new GradleException("Expected big-set key type to be [][] in ${javaFile}, got ${keyType}")
+			}
+			bigElementType = keyType.substring(0, keyType.length() - 4).trim()
+			def nullReturnMatcher = (setIteratorBody =~ /if \(mustReturnNull\)\s*\{\s*mustReturnNull = false;\s*last = n;\s*return ([^;]+);/)
+			if (nullReturnMatcher.find()) {
+				nullKeyReturnExpression = nullReturnMatcher.group(1).trim()
+			}
+		}
+	}
+
+	return [
+		source: source,
+		ownerClass: ownerClass,
+		linked: linked,
+		big: big,
+		packageName: packageName,
+		typeDecl: typeDecl,
+		typeArgs: typeArgs,
+		ownerTypeUse: ownerTypeUse,
+		iteratorClass: iteratorClass,
+		iteratorTypeUse: iteratorTypeUse,
+		iteratorInterface: iteratorInterface,
+		nextReturnType: nextReturnType,
+		nextMethod: nextMethod,
+		iterableType: iterableType,
+		keyType: keyType,
+		keyIsNullExpression: keyIsNullExpression,
+		bigElementType: bigElementType,
+		nullKeyReturnExpression: nullKeyReturnExpression
+	]
+}
+
+def buildAllocFreeSetIteratorClassSource = { Map meta ->
+	final String core = meta.linked ? """
+		private static final int NEXT_UNKNOWN = Integer.MIN_VALUE;
+		private static final int NEXT_NONE = -1;
+
+		private final ${meta.ownerTypeUse} owner;
+
+		private boolean inUse;
+		private long expectedSize;
+		private int nextIndex = NEXT_UNKNOWN;
+		private int scanNext;
+
+		public ${meta.iteratorClass}(final ${meta.ownerTypeUse} owner) {
+			this.owner = owner;
+		}
+
+		boolean isOwner(final ${meta.ownerTypeUse} set) {
+			return owner == set;
+		}
+
+		void open() {
+			if (inUse) throw new IllegalStateException("Iterator already in use.");
+			inUse = true;
+			expectedSize = owner.size;
+			nextIndex = NEXT_UNKNOWN;
+			scanNext = owner.first;
+		}
+
+		private void ensureOpenAndUnmodified() {
+			if (!inUse) throw new IllegalStateException("Iterator is not in use.");
+			if (expectedSize != owner.size) throw new IllegalStateException("Set was structurally modified during alloc-free iteration.");
+		}
+
+		private void computeNext() {
+			if (nextIndex != NEXT_UNKNOWN) return;
+			if (scanNext == -1) {
+				nextIndex = NEXT_NONE;
+				return;
+			}
+			nextIndex = scanNext;
+			scanNext = (int)owner.link[scanNext];
+		}
+
+		@Override
+		public boolean hasNext() {
+			ensureOpenAndUnmodified();
+			computeNext();
+			return nextIndex != NEXT_NONE;
+		}
+
+		@Override
+		public ${meta.nextReturnType} ${meta.nextMethod}() {
+			ensureOpenAndUnmodified();
+			computeNext();
+			if (nextIndex == NEXT_NONE) throw new NoSuchElementException();
+			final int index = nextIndex;
+			nextIndex = NEXT_UNKNOWN;
+			return owner.key[index];
+		}
+
+		@Override
+		public void remove() {
+			throw new UnsupportedOperationException("remove");
+		}
+
+		@Override
+		public java.util.Iterator<${meta.iterableType}> iterator() {
+			ensureOpenAndUnmodified();
+			return this;
+		}
+
+		@Override
+		public void close() {
+			if (!inUse) throw new IllegalStateException("Iterator is not in use.");
+			inUse = false;
+			nextIndex = NEXT_UNKNOWN;
+		}
+""" : (meta.big ? """
+		private static final long NEXT_UNKNOWN = Long.MIN_VALUE;
+		private static final long NEXT_NONE = -1L;
+
+		private final ${meta.ownerTypeUse} owner;
+
+		private boolean inUse;
+		private long expectedSize;
+		private long nextIndex = NEXT_UNKNOWN;
+		private long scanPos;
+		private boolean scanNullKey;
+
+		public ${meta.iteratorClass}(final ${meta.ownerTypeUse} owner) {
+			this.owner = owner;
+		}
+
+		boolean isOwner(final ${meta.ownerTypeUse} set) {
+			return owner == set;
+		}
+
+		void open() {
+			if (inUse) throw new IllegalStateException("Iterator already in use.");
+			inUse = true;
+			expectedSize = owner.size;
+			nextIndex = NEXT_UNKNOWN;
+			scanPos = owner.n;
+			scanNullKey = owner.containsNull;
+		}
+
+		private void ensureOpenAndUnmodified() {
+			if (!inUse) throw new IllegalStateException("Iterator is not in use.");
+			if (expectedSize != owner.size) throw new IllegalStateException("Set was structurally modified during alloc-free iteration.");
+		}
+
+		private void computeNext() {
+			if (nextIndex != NEXT_UNKNOWN) return;
+			if (scanNullKey) {
+				scanNullKey = false;
+				nextIndex = owner.n;
+				return;
+			}
+			final ${meta.keyType} key = owner.key;
+			while (scanPos != 0) {
+				final long pos = --scanPos;
+				final ${meta.bigElementType} k = it.unimi.dsi.fastutil.BigArrays.get(key, pos);
+				if (!(${meta.keyIsNullExpression})) {
+					nextIndex = pos;
+					return;
+				}
+			}
+			nextIndex = NEXT_NONE;
+		}
+
+		@Override
+		public boolean hasNext() {
+			ensureOpenAndUnmodified();
+			computeNext();
+			return nextIndex != NEXT_NONE;
+		}
+
+		@Override
+		public ${meta.nextReturnType} ${meta.nextMethod}() {
+			ensureOpenAndUnmodified();
+			computeNext();
+			if (nextIndex == NEXT_NONE) throw new NoSuchElementException();
+			final long index = nextIndex;
+			nextIndex = NEXT_UNKNOWN;
+			if (index == owner.n) return ${meta.nullKeyReturnExpression};
+			return it.unimi.dsi.fastutil.BigArrays.get(owner.key, index);
+		}
+
+		@Override
+		public void remove() {
+			throw new UnsupportedOperationException("remove");
+		}
+
+		@Override
+		public java.util.Iterator<${meta.iterableType}> iterator() {
+			ensureOpenAndUnmodified();
+			return this;
+		}
+
+		@Override
+		public void close() {
+			if (!inUse) throw new IllegalStateException("Iterator is not in use.");
+			inUse = false;
+			nextIndex = NEXT_UNKNOWN;
+		}
+""" : """
+		private static final int NEXT_UNKNOWN = Integer.MIN_VALUE;
+		private static final int NEXT_NONE = -1;
+
+		private final ${meta.ownerTypeUse} owner;
+
+		private boolean inUse;
+		private long expectedSize;
+		private int nextIndex = NEXT_UNKNOWN;
+		private int scanPos;
+		private boolean scanNullKey;
+
+		public ${meta.iteratorClass}(final ${meta.ownerTypeUse} owner) {
+			this.owner = owner;
+		}
+
+		boolean isOwner(final ${meta.ownerTypeUse} set) {
+			return owner == set;
+		}
+
+		void open() {
+			if (inUse) throw new IllegalStateException("Iterator already in use.");
+			inUse = true;
+			expectedSize = owner.size;
+			nextIndex = NEXT_UNKNOWN;
+			scanPos = owner.n;
+			scanNullKey = owner.containsNull;
+		}
+
+		private void ensureOpenAndUnmodified() {
+			if (!inUse) throw new IllegalStateException("Iterator is not in use.");
+			if (expectedSize != owner.size) throw new IllegalStateException("Set was structurally modified during alloc-free iteration.");
+		}
+
+		private void computeNext() {
+			if (nextIndex != NEXT_UNKNOWN) return;
+			if (scanNullKey) {
+				scanNullKey = false;
+				nextIndex = owner.n;
+				return;
+			}
+			final ${meta.keyType} key = owner.key;
+			while (scanPos != 0) {
+				final int pos = --scanPos;
+				if (!(${meta.keyIsNullExpression})) {
+					nextIndex = pos;
+					return;
+				}
+			}
+			nextIndex = NEXT_NONE;
+		}
+
+		@Override
+		public boolean hasNext() {
+			ensureOpenAndUnmodified();
+			computeNext();
+			return nextIndex != NEXT_NONE;
+		}
+
+		@Override
+		public ${meta.nextReturnType} ${meta.nextMethod}() {
+			ensureOpenAndUnmodified();
+			computeNext();
+			if (nextIndex == NEXT_NONE) throw new NoSuchElementException();
+			final int index = nextIndex;
+			nextIndex = NEXT_UNKNOWN;
+			return owner.key[index];
+		}
+
+		@Override
+		public void remove() {
+			throw new UnsupportedOperationException("remove");
+		}
+
+		@Override
+		public java.util.Iterator<${meta.iterableType}> iterator() {
+			ensureOpenAndUnmodified();
+			return this;
+		}
+
+		@Override
+		public void close() {
+			if (!inUse) throw new IllegalStateException("Iterator is not in use.");
+			inUse = false;
+			nextIndex = NEXT_UNKNOWN;
+		}
+""")
+
+	return """package ${meta.packageName};
+
+import java.util.NoSuchElementException;
+
+/** Reusable, allocation-free iterator for {@link ${meta.ownerClass}}. */
+public final class ${meta.iteratorClass}${meta.typeDecl} implements ${meta.iteratorInterface}, AutoCloseable, Iterable<${meta.iterableType}> {
+${core}
+}
+"""
+}
+
+def injectAllocFreeSetIteratorApi = { File javaFile, Map meta ->
+	String source = meta.source
+	if (source.contains("createAllocFreeIterator()") && source.contains("iterateElements(") && source.contains(meta.iteratorClass)) {
+		return false
+	}
+
+	final String allocFreeMethods = """
+	/** Creates a reusable allocation-free iterator instance. */
+	public ${meta.iteratorTypeUse} createAllocFreeIterator() {
+		return new ${meta.iteratorTypeUse}(this);
+	}
+
+	/** Opens an allocation-free iteration session on a reusable iterator.
+	 *
+	 * @param iterator reusable iterator created by {@link #createAllocFreeIterator()}.
+	 * @return the same iterator, opened for iteration.
+	 * @throws NullPointerException if {@code iterator} is {@code null}.
+	 * @throws IllegalArgumentException if {@code iterator} belongs to another set instance.
+	 * @throws IllegalStateException if {@code iterator} is already in use.
+	 */
+	public ${meta.iteratorTypeUse} iterateElements(final ${meta.iteratorTypeUse} iterator) {
+		if (iterator == null) throw new NullPointerException("iterator");
+		if (! iterator.isOwner(this)) throw new IllegalArgumentException("Iterator was created for another set instance.");
+		iterator.open();
+		return iterator;
+	}
+"""
+
+	int marker = source.indexOf("\n\tprivate final class SetIterator")
+	if (marker < 0) {
+		marker = source.indexOf("\n\tprivate class SetIterator")
+	}
+	if (marker < 0) {
+		throw new GradleException("Cannot find SetIterator section in ${javaFile}")
+	}
+
+	source = source.substring(0, marker) + "\n\n" + allocFreeMethods + "\n" + source.substring(marker)
+	javaFile.write(source, "UTF-8")
+	return true
+}
+
 java {
 	sourceCompatibility = JavaVersion.VERSION_1_8
 	targetCompatibility = JavaVersion.VERSION_1_8
@@ -404,20 +891,32 @@ tasks.register("prepareFallbackSources", Sync) {
 	}
 	includeEmptyDirs = false
 	doLast {
-		int patched = 0
-		int generated = 0
+		int patchedMaps = 0
+		int generatedMapIterators = 0
+		int patchedSets = 0
+		int generatedSetIterators = 0
 		fileTree(destinationDir).matching { include("**/*.java") }.files.each { File javaFile ->
 			if (isGeneratedOpenHashMapFile(javaFile)) {
 				final Map meta = parseOpenHashMapMetadata(javaFile)
 				if (injectAllocFreeIteratorApi(javaFile, meta)) {
-					patched++
+					patchedMaps++
 				}
 				final File iteratorFile = new File(javaFile.parentFile, "${meta.iteratorClass}.java")
 				iteratorFile.write(buildAllocFreeIteratorClassSource(meta), "UTF-8")
-				generated++
+				generatedMapIterators++
+			}
+			if (isGeneratedOpenHashSetFile(javaFile)) {
+				final Map meta = parseOpenHashSetMetadata(javaFile)
+				if (injectAllocFreeSetIteratorApi(javaFile, meta)) {
+					patchedSets++
+				}
+				final File iteratorFile = new File(javaFile.parentFile, "${meta.iteratorClass}.java")
+				iteratorFile.write(buildAllocFreeSetIteratorClassSource(meta), "UTF-8")
+				generatedSetIterators++
 			}
 		}
-		logger.lifecycle("Injected allocation-free iterator API into ${patched} generated OpenHashMap classes and generated ${generated} iterator classes.")
+		logger.lifecycle("Injected allocation-free iterator API into ${patchedMaps} generated OpenHashMap classes and generated ${generatedMapIterators} map iterator classes.")
+		logger.lifecycle("Injected allocation-free iterator API into ${patchedSets} generated OpenHashSet classes and generated ${generatedSetIterators} set iterator classes.")
 	}
 }
 
