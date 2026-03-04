@@ -18,9 +18,8 @@ public class Int2ObjectOpenHashMapAllocFreeIteratorTest {
 		map.put(1, "one");
 		map.put(2, "two");
 
-		final AllocFreeEntryIteratorInt2Object<String> iterator = map.createAllocFreeIterator();
 		int seen = 0;
-		try (AllocFreeEntryIteratorInt2Object<String> it = map.iterateEntries(iterator)) {
+		try (AllocFreeEntryIteratorInt2Object<String> it = map.poolAllocFreeIterator()) {
 			for (Int2ObjectMap.Entry<String> entry : it) {
 				seen += entry.getIntKey();
 				seen += entry.getValue().length();
@@ -34,9 +33,8 @@ public class Int2ObjectOpenHashMapAllocFreeIteratorTest {
 		final Int2ObjectOpenHashMap<String> map = new Int2ObjectOpenHashMap<String>();
 		map.put(1, "one");
 		map.put(2, "two");
-		final AllocFreeEntryIteratorInt2Object<String> iterator = map.createAllocFreeIterator();
 
-		try (AllocFreeEntryIteratorInt2Object<String> it = map.iterateEntries(iterator)) {
+		try (AllocFreeEntryIteratorInt2Object<String> it = map.poolAllocFreeIterator()) {
 			final Int2ObjectMap.Entry<String> first = it.next();
 			final Int2ObjectMap.Entry<String> second = it.next();
 			assertSame(first, second);
@@ -52,26 +50,25 @@ public class Int2ObjectOpenHashMapAllocFreeIteratorTest {
 		for (int i = 0; i < 256; i++) {
 			map.put(i, Integer.toString(i));
 		}
-		final AllocFreeEntryIteratorInt2Object<String> reusable = map.createAllocFreeIterator();
 
 		long sink = 0;
 		for (int i = 0; i < 20000; i++) {
-			sink += iterateAll(map, reusable);
+			sink += iterateAll(map);
 		}
 
 		final long threadId = Thread.currentThread().getId();
 		final long before = threadMxBean.getThreadAllocatedBytes(threadId);
 		for (int i = 0; i < 50000; i++) {
-			sink += iterateAll(map, reusable);
+			sink += iterateAll(map);
 		}
 		final long allocated = threadMxBean.getThreadAllocatedBytes(threadId) - before;
 		assertEquals("Expected zero allocations in hot iteration path, but got " + allocated + " bytes", 0L, allocated);
 		assertEquals(0L, sink & 1L);
 	}
 
-	private static long iterateAll(final Int2ObjectOpenHashMap<String> map, final AllocFreeEntryIteratorInt2Object<String> reusable) {
+	private static long iterateAll(final Int2ObjectOpenHashMap<String> map) {
 		long sum = 0;
-		try (AllocFreeEntryIteratorInt2Object<String> it = map.iterateEntries(reusable)) {
+		try (AllocFreeEntryIteratorInt2Object<String> it = map.poolAllocFreeIterator()) {
 			while (it.hasNext()) {
 				final Int2ObjectMap.Entry<String> entry = it.next();
 				sum += entry.getIntKey();

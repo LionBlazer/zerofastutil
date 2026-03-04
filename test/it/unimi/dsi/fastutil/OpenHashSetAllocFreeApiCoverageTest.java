@@ -38,15 +38,12 @@ public class OpenHashSetAllocFreeApiCoverageTest {
 	}
 
 	private static void assertAllocFreeApi(final Class<?> setClass) throws Exception {
-		final Method create = setClass.getMethod("createAllocFreeIterator");
-		assertNotNull(create);
-		final Class<?> iteratorType = create.getReturnType();
+		final Method pool = setClass.getMethod("poolAllocFreeIterator");
+		assertNotNull(pool);
+		final Class<?> iteratorType = pool.getReturnType();
 		assertTrue("Iterator type should be generated as top-level class", iteratorType.getEnclosingClass() == null);
 		assertTrue("Iterator name should start with AllocFreeIterator", iteratorType.getSimpleName().startsWith("AllocFreeIterator"));
 		assertFalse("Iterator name should stay concise and not contain 'Set'", iteratorType.getSimpleName().contains("Set"));
-
-		final Method iterate = setClass.getMethod("iterateElements", iteratorType);
-		assertNotNull(iterate);
-		assertEquals(iteratorType, iterate.getReturnType());
+		assertEquals(iteratorType, pool.getReturnType());
 	}
 }

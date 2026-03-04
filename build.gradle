@@ -88,6 +88,44 @@ def isGeneratedOpenHashMapFile = { File javaFile ->
 	name.contains("2") && openHashMapDriverSuffixes.any { name.endsWith(it) }
 }
 
+def extractBracedBody = { String source, int openingBraceIndex ->
+	int depth = 0
+	for (int i = openingBraceIndex; i < source.length(); i++) {
+		final char ch = source.charAt(i)
+		if (ch == '{') {
+			depth++
+		} else if (ch == '}') {
+			depth--
+			if (depth == 0) {
+				return [
+					body: source.substring(openingBraceIndex + 1, i),
+					closingIndex: i
+				]
+			}
+		}
+	}
+	throw new GradleException("Unbalanced braces while parsing generated source.")
+}
+
+def extractFirstTopLevelSegment = { String source, String separator ->
+	if (separator == null || separator.length() != 1) {
+		throw new GradleException("Separator must be exactly one character.")
+	}
+	final char separatorChar = separator.charAt(0)
+	int angleDepth = 0
+	for (int i = 0; i < source.length(); i++) {
+		final char ch = source.charAt(i)
+		if (ch == '<') {
+			angleDepth++
+		} else if (ch == '>') {
+			angleDepth--
+		} else if (ch == separatorChar && angleDepth == 0) {
+			return source.substring(0, i).trim()
+		}
+	}
+	return source.trim()
+}
+
 def parseOpenHashMapMetadata = { File javaFile ->
 	String source = javaFile.getText("UTF-8")
 	final String ownerClass = javaFile.name.substring(0, javaFile.name.length() - ".java".length())
@@ -121,11 +159,22 @@ def parseOpenHashMapMetadata = { File javaFile ->
 	final String ownerTypeUse = ownerClass + typeArgs
 	final String iteratorTypeUse = iteratorClass + typeArgs
 
-	def entryMatcher = (source =~ /final class MapEntry implements\s+(.+?),\s*Map\.Entry</)
-	if (!entryMatcher.find()) {
+	def mapEntryMatcher = (source =~ /final class MapEntry implements\s+([^\{]+)\{/)
+	if (!mapEntryMatcher.find()) {
 		throw new GradleException("Cannot find MapEntry declaration in ${javaFile}")
 	}
-	final String entryType = entryMatcher.group(1).trim()
+	final String mapEntryInterfaces = mapEntryMatcher.group(1).trim()
+	final String entryType = extractFirstTopLevelSegment(mapEntryInterfaces, ',')
+	final int mapEntryOpeningBrace = source.indexOf('{', mapEntryMatcher.start())
+	if (mapEntryOpeningBrace < 0) {
+		throw new GradleException("Cannot find MapEntry opening brace in ${javaFile}")
+	}
+	final String mapEntryBody = extractBracedBody(source, mapEntryOpeningBrace).body
+	final String pooledMapEntryBody = mapEntryBody
+			.replaceAll(/(?m)\bMapEntry\s*\(/, "EntryView(")
+			.replaceAll(/\bkey\[/, "owner.key[")
+			.replaceAll(/\bvalue\[/, "owner.value[")
+			.replaceAll(/\bstrategy\b/, "owner.strategy")
 
 	String keyType = null
 	String keyIsNullExpression = null
@@ -152,6 +201,8 @@ def parseOpenHashMapMetadata = { File javaFile ->
 		typeArgs: typeArgs,
 		ownerTypeUse: ownerTypeUse,
 		entryType: entryType,
+		mapEntryInterfaces: mapEntryInterfaces,
+		pooledMapEntryBody: pooledMapEntryBody,
 		iteratorClass: iteratorClass,
 		iteratorTypeUse: iteratorTypeUse,
 		keyType: keyType,
@@ -160,29 +211,38 @@ def parseOpenHashMapMetadata = { File javaFile ->
 }
 
 def buildAllocFreeIteratorClassSource = { Map meta ->
+	final String staticTypeParams = meta.typeDecl ? meta.typeDecl + " " : ""
+	final String entryView = """
+		private final class EntryView implements ${meta.mapEntryInterfaces} {
+${meta.pooledMapEntryBody}
+		}
+"""
+
 	final String core = meta.linked ? """
 		private static final int NEXT_UNKNOWN = Integer.MIN_VALUE;
 		private static final int NEXT_NONE = -1;
+		private static final ThreadLocal<java.util.ArrayDeque<${meta.iteratorClass}>> POOL = ThreadLocal.withInitial(java.util.ArrayDeque::new);
 
-		private final ${meta.ownerTypeUse} owner;
-		private final ${meta.ownerTypeUse}.MapEntry entry;
+		private ${meta.ownerTypeUse} owner;
+		private final EntryView entry = new EntryView();
 
 		private boolean inUse;
 		private int expectedSize;
 		private int nextIndex = NEXT_UNKNOWN;
 		private int scanNext;
 
-		public ${meta.iteratorClass}(final ${meta.ownerTypeUse} owner) {
-			this.owner = owner;
-			this.entry = owner.new MapEntry();
+		@SuppressWarnings("unchecked")
+		static ${staticTypeParams}${meta.iteratorTypeUse} acquire(final ${meta.ownerTypeUse} owner) {
+			final java.util.ArrayDeque<${meta.iteratorClass}> pool = POOL.get();
+			${meta.iteratorClass} iterator = pool.pollFirst();
+			if (iterator == null) iterator = new ${meta.iteratorClass}${meta.typeArgs}();
+			iterator.open(owner);
+			return (${meta.iteratorTypeUse})iterator;
 		}
 
-		boolean isOwner(final ${meta.ownerTypeUse} map) {
-			return owner == map;
-		}
-
-		void open() {
+		void open(final ${meta.ownerTypeUse} owner) {
 			if (inUse) throw new IllegalStateException("Iterator already in use.");
+			this.owner = owner;
 			inUse = true;
 			expectedSize = owner.size;
 			nextIndex = NEXT_UNKNOWN;
@@ -213,7 +273,7 @@ def buildAllocFreeIteratorClassSource = { Map meta ->
 		}
 
 		@Override
-		public ${meta.ownerTypeUse}.MapEntry next() {
+		public ${meta.entryType} next() {
 			ensureOpenAndUnmodified();
 			computeNext();
 			if (nextIndex == NEXT_NONE) throw new NoSuchElementException();
@@ -239,13 +299,17 @@ def buildAllocFreeIteratorClassSource = { Map meta ->
 			inUse = false;
 			nextIndex = NEXT_UNKNOWN;
 			entry.index = -1;
+			owner = null;
+			POOL.get().offerFirst(this);
 		}
+${entryView}
 """ : """
 		private static final int NEXT_UNKNOWN = Integer.MIN_VALUE;
 		private static final int NEXT_NONE = -1;
+		private static final ThreadLocal<java.util.ArrayDeque<${meta.iteratorClass}>> POOL = ThreadLocal.withInitial(java.util.ArrayDeque::new);
 
-		private final ${meta.ownerTypeUse} owner;
-		private final ${meta.ownerTypeUse}.MapEntry entry;
+		private ${meta.ownerTypeUse} owner;
+		private final EntryView entry = new EntryView();
 
 		private boolean inUse;
 		private int expectedSize;
@@ -253,17 +317,18 @@ def buildAllocFreeIteratorClassSource = { Map meta ->
 		private int scanPos;
 		private boolean scanNullKey;
 
-		public ${meta.iteratorClass}(final ${meta.ownerTypeUse} owner) {
-			this.owner = owner;
-			this.entry = owner.new MapEntry();
+		@SuppressWarnings("unchecked")
+		static ${staticTypeParams}${meta.iteratorTypeUse} acquire(final ${meta.ownerTypeUse} owner) {
+			final java.util.ArrayDeque<${meta.iteratorClass}> pool = POOL.get();
+			${meta.iteratorClass} iterator = pool.pollFirst();
+			if (iterator == null) iterator = new ${meta.iteratorClass}${meta.typeArgs}();
+			iterator.open(owner);
+			return (${meta.iteratorTypeUse})iterator;
 		}
 
-		boolean isOwner(final ${meta.ownerTypeUse} map) {
-			return owner == map;
-		}
-
-		void open() {
+		void open(final ${meta.ownerTypeUse} owner) {
 			if (inUse) throw new IllegalStateException("Iterator already in use.");
+			this.owner = owner;
 			inUse = true;
 			expectedSize = owner.size;
 			nextIndex = NEXT_UNKNOWN;
@@ -303,7 +368,7 @@ def buildAllocFreeIteratorClassSource = { Map meta ->
 		}
 
 		@Override
-		public ${meta.ownerTypeUse}.MapEntry next() {
+		public ${meta.entryType} next() {
 			ensureOpenAndUnmodified();
 			computeNext();
 			if (nextIndex == NEXT_NONE) throw new NoSuchElementException();
@@ -329,12 +394,16 @@ def buildAllocFreeIteratorClassSource = { Map meta ->
 			inUse = false;
 			nextIndex = NEXT_UNKNOWN;
 			entry.index = -1;
+			owner = null;
+			POOL.get().offerFirst(this);
 		}
+${entryView}
 """
 
 	return """package ${meta.packageName};
 
 import java.util.NoSuchElementException;
+import java.util.Map;
 
 /** Reusable, allocation-free entry iterator for {@link ${meta.ownerClass}}. */
 public final class ${meta.iteratorClass}${meta.typeDecl} implements java.util.Iterator<${meta.entryType}>, AutoCloseable, Iterable<${meta.entryType}> {
@@ -345,29 +414,17 @@ ${core}
 
 def injectAllocFreeIteratorApi = { File javaFile, Map meta ->
 	String source = meta.source
-	if (source.contains("createAllocFreeIterator()") && source.contains(meta.iteratorClass)) {
+	if (source.contains("poolAllocFreeIterator()") && source.contains(meta.iteratorClass)) {
 		return false
 	}
 
 	final String allocFreeMethods = """
-	/** Creates a reusable allocation-free entry iterator instance. */
-	public ${meta.iteratorTypeUse} createAllocFreeIterator() {
-		return new ${meta.iteratorTypeUse}(this);
-	}
-
-	/** Opens an allocation-free iteration session on a reusable iterator.
+	/** Borrows an allocation-free pooled entry iterator.
 	 *
-	 * @param iterator reusable iterator created by {@link #createAllocFreeIterator()}.
-	 * @return the same iterator, opened for iteration.
-	 * @throws NullPointerException if {@code iterator} is {@code null}.
-	 * @throws IllegalArgumentException if {@code iterator} belongs to another map instance.
-	 * @throws IllegalStateException if {@code iterator} is already in use.
+	 * <p>The iterator must be closed after use to return it back to the current thread pool.
 	 */
-	public ${meta.iteratorTypeUse} iterateEntries(final ${meta.iteratorTypeUse} iterator) {
-		if (iterator == null) throw new NullPointerException("iterator");
-		if (! iterator.isOwner(this)) throw new IllegalArgumentException("Iterator was created for another map instance.");
-		iterator.open();
-		return iterator;
+	public ${meta.iteratorTypeUse} poolAllocFreeIterator() {
+		return ${meta.iteratorClass}.acquire(this);
 	}
 """
 
@@ -379,25 +436,6 @@ def injectAllocFreeIteratorApi = { File javaFile, Map meta ->
 	source = source.substring(0, marker) + "\n\n" + allocFreeMethods + "\n" + source.substring(marker)
 	javaFile.write(source, "UTF-8")
 	return true
-}
-
-def extractBracedBody = { String source, int openingBraceIndex ->
-	int depth = 0
-	for (int i = openingBraceIndex; i < source.length(); i++) {
-		final char ch = source.charAt(i)
-		if (ch == '{') {
-			depth++
-		} else if (ch == '}') {
-			depth--
-			if (depth == 0) {
-				return [
-					body: source.substring(openingBraceIndex + 1, i),
-					closingIndex: i
-				]
-			}
-		}
-	}
-	throw new GradleException("Unbalanced braces while parsing generated source.")
 }
 
 def buildAllocFreeSetIteratorClassName = { String ownerClass ->
@@ -546,27 +584,32 @@ def parseOpenHashSetMetadata = { File javaFile ->
 }
 
 def buildAllocFreeSetIteratorClassSource = { Map meta ->
+	final String staticTypeParams = meta.typeDecl ? meta.typeDecl + " " : ""
+
 	final String core = meta.linked ? """
 		private static final int NEXT_UNKNOWN = Integer.MIN_VALUE;
 		private static final int NEXT_NONE = -1;
+		private static final ThreadLocal<java.util.ArrayDeque<${meta.iteratorClass}>> POOL = ThreadLocal.withInitial(java.util.ArrayDeque::new);
 
-		private final ${meta.ownerTypeUse} owner;
+		private ${meta.ownerTypeUse} owner;
 
 		private boolean inUse;
 		private long expectedSize;
 		private int nextIndex = NEXT_UNKNOWN;
 		private int scanNext;
 
-		public ${meta.iteratorClass}(final ${meta.ownerTypeUse} owner) {
-			this.owner = owner;
+		@SuppressWarnings("unchecked")
+		static ${staticTypeParams}${meta.iteratorTypeUse} acquire(final ${meta.ownerTypeUse} owner) {
+			final java.util.ArrayDeque<${meta.iteratorClass}> pool = POOL.get();
+			${meta.iteratorClass} iterator = pool.pollFirst();
+			if (iterator == null) iterator = new ${meta.iteratorClass}${meta.typeArgs}();
+			iterator.open(owner);
+			return (${meta.iteratorTypeUse})iterator;
 		}
 
-		boolean isOwner(final ${meta.ownerTypeUse} set) {
-			return owner == set;
-		}
-
-		void open() {
+		void open(final ${meta.ownerTypeUse} owner) {
 			if (inUse) throw new IllegalStateException("Iterator already in use.");
+			this.owner = owner;
 			inUse = true;
 			expectedSize = owner.size;
 			nextIndex = NEXT_UNKNOWN;
@@ -621,12 +664,15 @@ def buildAllocFreeSetIteratorClassSource = { Map meta ->
 			if (!inUse) throw new IllegalStateException("Iterator is not in use.");
 			inUse = false;
 			nextIndex = NEXT_UNKNOWN;
+			owner = null;
+			POOL.get().offerFirst(this);
 		}
 """ : (meta.big ? """
 		private static final long NEXT_UNKNOWN = Long.MIN_VALUE;
 		private static final long NEXT_NONE = -1L;
+		private static final ThreadLocal<java.util.ArrayDeque<${meta.iteratorClass}>> POOL = ThreadLocal.withInitial(java.util.ArrayDeque::new);
 
-		private final ${meta.ownerTypeUse} owner;
+		private ${meta.ownerTypeUse} owner;
 
 		private boolean inUse;
 		private long expectedSize;
@@ -634,16 +680,18 @@ def buildAllocFreeSetIteratorClassSource = { Map meta ->
 		private long scanPos;
 		private boolean scanNullKey;
 
-		public ${meta.iteratorClass}(final ${meta.ownerTypeUse} owner) {
-			this.owner = owner;
+		@SuppressWarnings("unchecked")
+		static ${staticTypeParams}${meta.iteratorTypeUse} acquire(final ${meta.ownerTypeUse} owner) {
+			final java.util.ArrayDeque<${meta.iteratorClass}> pool = POOL.get();
+			${meta.iteratorClass} iterator = pool.pollFirst();
+			if (iterator == null) iterator = new ${meta.iteratorClass}${meta.typeArgs}();
+			iterator.open(owner);
+			return (${meta.iteratorTypeUse})iterator;
 		}
 
-		boolean isOwner(final ${meta.ownerTypeUse} set) {
-			return owner == set;
-		}
-
-		void open() {
+		void open(final ${meta.ownerTypeUse} owner) {
 			if (inUse) throw new IllegalStateException("Iterator already in use.");
+			this.owner = owner;
 			inUse = true;
 			expectedSize = owner.size;
 			nextIndex = NEXT_UNKNOWN;
@@ -709,12 +757,15 @@ def buildAllocFreeSetIteratorClassSource = { Map meta ->
 			if (!inUse) throw new IllegalStateException("Iterator is not in use.");
 			inUse = false;
 			nextIndex = NEXT_UNKNOWN;
+			owner = null;
+			POOL.get().offerFirst(this);
 		}
 """ : """
 		private static final int NEXT_UNKNOWN = Integer.MIN_VALUE;
 		private static final int NEXT_NONE = -1;
+		private static final ThreadLocal<java.util.ArrayDeque<${meta.iteratorClass}>> POOL = ThreadLocal.withInitial(java.util.ArrayDeque::new);
 
-		private final ${meta.ownerTypeUse} owner;
+		private ${meta.ownerTypeUse} owner;
 
 		private boolean inUse;
 		private long expectedSize;
@@ -722,16 +773,18 @@ def buildAllocFreeSetIteratorClassSource = { Map meta ->
 		private int scanPos;
 		private boolean scanNullKey;
 
-		public ${meta.iteratorClass}(final ${meta.ownerTypeUse} owner) {
-			this.owner = owner;
+		@SuppressWarnings("unchecked")
+		static ${staticTypeParams}${meta.iteratorTypeUse} acquire(final ${meta.ownerTypeUse} owner) {
+			final java.util.ArrayDeque<${meta.iteratorClass}> pool = POOL.get();
+			${meta.iteratorClass} iterator = pool.pollFirst();
+			if (iterator == null) iterator = new ${meta.iteratorClass}${meta.typeArgs}();
+			iterator.open(owner);
+			return (${meta.iteratorTypeUse})iterator;
 		}
 
-		boolean isOwner(final ${meta.ownerTypeUse} set) {
-			return owner == set;
-		}
-
-		void open() {
+		void open(final ${meta.ownerTypeUse} owner) {
 			if (inUse) throw new IllegalStateException("Iterator already in use.");
+			this.owner = owner;
 			inUse = true;
 			expectedSize = owner.size;
 			nextIndex = NEXT_UNKNOWN;
@@ -795,6 +848,8 @@ def buildAllocFreeSetIteratorClassSource = { Map meta ->
 			if (!inUse) throw new IllegalStateException("Iterator is not in use.");
 			inUse = false;
 			nextIndex = NEXT_UNKNOWN;
+			owner = null;
+			POOL.get().offerFirst(this);
 		}
 """)
 
@@ -811,29 +866,17 @@ ${core}
 
 def injectAllocFreeSetIteratorApi = { File javaFile, Map meta ->
 	String source = meta.source
-	if (source.contains("createAllocFreeIterator()") && source.contains("iterateElements(") && source.contains(meta.iteratorClass)) {
+	if (source.contains("poolAllocFreeIterator()") && source.contains(meta.iteratorClass)) {
 		return false
 	}
 
 	final String allocFreeMethods = """
-	/** Creates a reusable allocation-free iterator instance. */
-	public ${meta.iteratorTypeUse} createAllocFreeIterator() {
-		return new ${meta.iteratorTypeUse}(this);
-	}
-
-	/** Opens an allocation-free iteration session on a reusable iterator.
+	/** Borrows an allocation-free pooled iterator.
 	 *
-	 * @param iterator reusable iterator created by {@link #createAllocFreeIterator()}.
-	 * @return the same iterator, opened for iteration.
-	 * @throws NullPointerException if {@code iterator} is {@code null}.
-	 * @throws IllegalArgumentException if {@code iterator} belongs to another set instance.
-	 * @throws IllegalStateException if {@code iterator} is already in use.
+	 * <p>The iterator must be closed after use to return it back to the current thread pool.
 	 */
-	public ${meta.iteratorTypeUse} iterateElements(final ${meta.iteratorTypeUse} iterator) {
-		if (iterator == null) throw new NullPointerException("iterator");
-		if (! iterator.isOwner(this)) throw new IllegalArgumentException("Iterator was created for another set instance.");
-		iterator.open();
-		return iterator;
+	public ${meta.iteratorTypeUse} poolAllocFreeIterator() {
+		return ${meta.iteratorClass}.acquire(this);
 	}
 """
 

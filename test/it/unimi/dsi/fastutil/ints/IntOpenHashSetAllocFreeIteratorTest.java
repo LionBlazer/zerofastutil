@@ -1,9 +1,13 @@
 package it.unimi.dsi.fastutil.ints;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import java.lang.management.ManagementFactory;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.Assume;
 import org.junit.Test;
@@ -18,9 +22,8 @@ public class IntOpenHashSetAllocFreeIteratorTest {
 		set.add(10);
 		set.add(20);
 
-		final AllocFreeIteratorInt allocFreeIterator = set.createAllocFreeIterator();
 		int sum = 0;
-		try (AllocFreeIteratorInt it = set.iterateElements(allocFreeIterator)) {
+		try (AllocFreeIteratorInt it = set.poolAllocFreeIterator()) {
 			while (it.hasNext()) {
 				sum += it.nextInt();
 			}
@@ -29,46 +32,11 @@ public class IntOpenHashSetAllocFreeIteratorTest {
 	}
 
 	@Test
-	public void testIteratorReuseAndInUseGuard() {
-		final IntOpenHashSet set = new IntOpenHashSet();
-		set.add(1);
-		set.add(2);
-
-		final AllocFreeIteratorInt reusable = set.createAllocFreeIterator();
-		try (AllocFreeIteratorInt it = set.iterateElements(reusable)) {
-			try {
-				set.iterateElements(reusable);
-				fail("Expected IllegalStateException");
-			} catch (final IllegalStateException expected) {
-				// Expected.
-			}
-			assertEquals(2, count(it));
-		}
-		try (AllocFreeIteratorInt it = set.iterateElements(reusable)) {
-			assertEquals(2, count(it));
-		}
-	}
-
-	@Test
-	public void testIteratorOwnerGuard() {
-		final IntOpenHashSet set1 = new IntOpenHashSet();
-		final IntOpenHashSet set2 = new IntOpenHashSet();
-		final AllocFreeIteratorInt iterator = set1.createAllocFreeIterator();
-		try {
-			set2.iterateElements(iterator);
-			fail("Expected IllegalArgumentException");
-		} catch (final IllegalArgumentException expected) {
-			// Expected.
-		}
-	}
-
-	@Test
 	public void testStructuralModificationGuard() {
 		final IntOpenHashSet set = new IntOpenHashSet();
 		set.add(1);
 		set.add(2);
-		final AllocFreeIteratorInt iterator = set.createAllocFreeIterator();
-		try (AllocFreeIteratorInt it = set.iterateElements(iterator)) {
+		try (AllocFreeIteratorInt it = set.poolAllocFreeIterator()) {
 			set.add(3);
 			try {
 				it.hasNext();
@@ -80,6 +48,59 @@ public class IntOpenHashSetAllocFreeIteratorTest {
 	}
 
 	@Test
+	public void testConcurrentBorrowAcrossThreads() throws Exception {
+		final IntOpenHashSet set = new IntOpenHashSet();
+		for (int i = 0; i < 512; i++) {
+			set.add(1000 + i);
+		}
+		final long expected = iterateAll(set);
+		final long[] sums = new long[2];
+		final AtomicReference<Throwable> failure = new AtomicReference<Throwable>();
+		final CountDownLatch opened = new CountDownLatch(2);
+		final CountDownLatch go = new CountDownLatch(1);
+		final CountDownLatch done = new CountDownLatch(2);
+
+		final Runnable worker0 = new Runnable() {
+			@Override
+			public void run() {
+				try (AllocFreeIteratorInt it = set.poolAllocFreeIterator()) {
+					opened.countDown();
+					go.await();
+					sums[0] = sum(it);
+				} catch (final Throwable t) {
+					failure.compareAndSet(null, t);
+				} finally {
+					done.countDown();
+				}
+			}
+		};
+		final Runnable worker1 = new Runnable() {
+			@Override
+			public void run() {
+				try (AllocFreeIteratorInt it = set.poolAllocFreeIterator()) {
+					opened.countDown();
+					go.await();
+					sums[1] = sum(it);
+				} catch (final Throwable t) {
+					failure.compareAndSet(null, t);
+				} finally {
+					done.countDown();
+				}
+			}
+		};
+
+		new Thread(worker0, "alloc-free-set-worker-0").start();
+		new Thread(worker1, "alloc-free-set-worker-1").start();
+
+		assertTrue("Workers did not open iterators in time", opened.await(5, TimeUnit.SECONDS));
+		go.countDown();
+		assertTrue("Workers did not finish in time", done.await(5, TimeUnit.SECONDS));
+		if (failure.get() != null) throw new AssertionError(failure.get());
+		assertEquals(expected, sums[0]);
+		assertEquals(expected, sums[1]);
+	}
+
+	@Test
 	public void testZeroAllocationInHotLoop() {
 		final ThreadMXBean threadMxBean = allocationThreadMxBean();
 		Assume.assumeTrue(threadMxBean != null);
@@ -88,38 +109,32 @@ public class IntOpenHashSetAllocFreeIteratorTest {
 		for (int i = 0; i < 512; i++) {
 			set.add(1000 + i);
 		}
-		final AllocFreeIteratorInt reusable = set.createAllocFreeIterator();
 
 		long sink = 0;
 		for (int i = 0; i < 20000; i++) {
-			sink += iterateAll(set, reusable);
+			sink += iterateAll(set);
 		}
 
 		final long threadId = Thread.currentThread().getId();
 		final long before = threadMxBean.getThreadAllocatedBytes(threadId);
 		for (int i = 0; i < 50000; i++) {
-			sink += iterateAll(set, reusable);
+			sink += iterateAll(set);
 		}
 		final long allocated = threadMxBean.getThreadAllocatedBytes(threadId) - before;
 		assertEquals("Expected zero allocations in hot iteration path, but got " + allocated + " bytes", 0L, allocated);
 		assertEquals(0L, sink & 1L);
 	}
 
-	private static int count(final AllocFreeIteratorInt it) {
-		int seen = 0;
-		while (it.hasNext()) {
-			it.nextInt();
-			seen++;
+	private static long iterateAll(final IntOpenHashSet set) {
+		try (AllocFreeIteratorInt it = set.poolAllocFreeIterator()) {
+			return sum(it);
 		}
-		return seen;
 	}
 
-	private static long iterateAll(final IntOpenHashSet set, final AllocFreeIteratorInt reusable) {
+	private static long sum(final AllocFreeIteratorInt it) {
 		long sum = 0;
-		try (AllocFreeIteratorInt it = set.iterateElements(reusable)) {
-			while (it.hasNext()) {
-				sum += it.nextInt();
-			}
+		while (it.hasNext()) {
+			sum += it.nextInt();
 		}
 		return sum;
 	}

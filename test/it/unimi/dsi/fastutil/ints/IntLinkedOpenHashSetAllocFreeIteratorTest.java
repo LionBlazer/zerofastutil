@@ -20,8 +20,7 @@ public class IntLinkedOpenHashSetAllocFreeIteratorTest {
 		set.add(1);
 		set.add(2);
 
-		final AllocFreeIteratorIntLinked allocFreeIterator = set.createAllocFreeIterator();
-		try (AllocFreeIteratorIntLinked it = set.iterateElements(allocFreeIterator)) {
+		try (AllocFreeIteratorIntLinked it = set.poolAllocFreeIterator()) {
 			assertEquals(3, it.nextInt());
 			assertEquals(1, it.nextInt());
 			assertEquals(2, it.nextInt());
@@ -30,33 +29,11 @@ public class IntLinkedOpenHashSetAllocFreeIteratorTest {
 	}
 
 	@Test
-	public void testIteratorReuseAndInUseGuard() {
-		final IntLinkedOpenHashSet set = new IntLinkedOpenHashSet();
-		set.add(1);
-		set.add(2);
-
-		final AllocFreeIteratorIntLinked reusable = set.createAllocFreeIterator();
-		try (AllocFreeIteratorIntLinked it = set.iterateElements(reusable)) {
-			try {
-				set.iterateElements(reusable);
-				fail("Expected IllegalStateException");
-			} catch (final IllegalStateException expected) {
-				// Expected.
-			}
-			assertEquals(2, count(it));
-		}
-		try (AllocFreeIteratorIntLinked it = set.iterateElements(reusable)) {
-			assertEquals(2, count(it));
-		}
-	}
-
-	@Test
 	public void testStructuralModificationGuard() {
 		final IntLinkedOpenHashSet set = new IntLinkedOpenHashSet();
 		set.add(1);
 		set.add(2);
-		final AllocFreeIteratorIntLinked iterator = set.createAllocFreeIterator();
-		try (AllocFreeIteratorIntLinked it = set.iterateElements(iterator)) {
+		try (AllocFreeIteratorIntLinked it = set.poolAllocFreeIterator()) {
 			set.add(3);
 			try {
 				it.hasNext();
@@ -76,35 +53,25 @@ public class IntLinkedOpenHashSetAllocFreeIteratorTest {
 		for (int i = 0; i < 512; i++) {
 			set.add(1000 + i);
 		}
-		final AllocFreeIteratorIntLinked reusable = set.createAllocFreeIterator();
 
 		long sink = 0;
 		for (int i = 0; i < 20000; i++) {
-			sink += iterateAll(set, reusable);
+			sink += iterateAll(set);
 		}
 
 		final long threadId = Thread.currentThread().getId();
 		final long before = threadMxBean.getThreadAllocatedBytes(threadId);
 		for (int i = 0; i < 50000; i++) {
-			sink += iterateAll(set, reusable);
+			sink += iterateAll(set);
 		}
 		final long allocated = threadMxBean.getThreadAllocatedBytes(threadId) - before;
 		assertEquals("Expected zero allocations in hot iteration path, but got " + allocated + " bytes", 0L, allocated);
 		assertEquals(0L, sink & 1L);
 	}
 
-	private static int count(final AllocFreeIteratorIntLinked it) {
-		int seen = 0;
-		while (it.hasNext()) {
-			it.nextInt();
-			seen++;
-		}
-		return seen;
-	}
-
-	private static long iterateAll(final IntLinkedOpenHashSet set, final AllocFreeIteratorIntLinked reusable) {
+	private static long iterateAll(final IntLinkedOpenHashSet set) {
 		long sum = 0;
-		try (AllocFreeIteratorIntLinked it = set.iterateElements(reusable)) {
+		try (AllocFreeIteratorIntLinked it = set.poolAllocFreeIterator()) {
 			while (it.hasNext()) {
 				sum += it.nextInt();
 			}

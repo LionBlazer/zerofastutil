@@ -20,9 +20,8 @@ public class Object2ObjectOpenHashMapAllocFreeIteratorTest {
 		map.put("a", "1");
 		map.put("b", "2");
 
-		final AllocFreeEntryIterator<String, String> allocFreeIterator = map.createAllocFreeIterator();
 		int seen = 0;
-		try (AllocFreeEntryIterator<String, String> it = map.iterateEntries(allocFreeIterator)) {
+		try (AllocFreeEntryIterator<String, String> it = map.poolAllocFreeIterator()) {
 			for (Object2ObjectMap.Entry<String, String> entry : it) {
 				assertNotNull(entry.getKey());
 				assertNotNull(entry.getValue());
@@ -33,55 +32,15 @@ public class Object2ObjectOpenHashMapAllocFreeIteratorTest {
 	}
 
 	@Test
-	public void testIteratorReuseAndInUseGuard() {
+	public void testEntryObjectIsReused() {
 		final Object2ObjectOpenHashMap<Integer, Integer> map = new Object2ObjectOpenHashMap<Integer, Integer>();
 		map.put(Integer.valueOf(1), Integer.valueOf(11));
 		map.put(Integer.valueOf(2), Integer.valueOf(22));
 
-		final AllocFreeEntryIterator<Integer, Integer> reusable = map.createAllocFreeIterator();
-		try (AllocFreeEntryIterator<Integer, Integer> it = map.iterateEntries(reusable)) {
-			try {
-				map.iterateEntries(reusable);
-				fail("Expected IllegalStateException");
-			} catch (final IllegalStateException expected) {
-				// Expected.
-			}
+		try (AllocFreeEntryIterator<Integer, Integer> it = map.poolAllocFreeIterator()) {
 			final Object2ObjectMap.Entry<Integer, Integer> first = it.next();
 			final Object2ObjectMap.Entry<Integer, Integer> second = it.next();
 			assertSame(first, second);
-		}
-		try (AllocFreeEntryIterator<Integer, Integer> it = map.iterateEntries(reusable)) {
-			int seen = 0;
-			while (it.hasNext()) {
-				it.next();
-				seen++;
-			}
-			assertEquals(2, seen);
-		}
-	}
-
-	@Test
-	public void testIteratorOwnerGuard() {
-		final Object2ObjectOpenHashMap<Integer, Integer> map1 = new Object2ObjectOpenHashMap<Integer, Integer>();
-		final Object2ObjectOpenHashMap<Integer, Integer> map2 = new Object2ObjectOpenHashMap<Integer, Integer>();
-		final AllocFreeEntryIterator<Integer, Integer> iterator = map1.createAllocFreeIterator();
-		try {
-			map2.iterateEntries(iterator);
-			fail("Expected IllegalArgumentException");
-		} catch (final IllegalArgumentException expected) {
-			// Expected.
-		}
-	}
-
-	@Test
-	public void testCloseWithoutOpenGuard() {
-		final Object2ObjectOpenHashMap<Integer, Integer> map = new Object2ObjectOpenHashMap<Integer, Integer>();
-		final AllocFreeEntryIterator<Integer, Integer> iterator = map.createAllocFreeIterator();
-		try {
-			iterator.close();
-			fail("Expected IllegalStateException");
-		} catch (final IllegalStateException expected) {
-			// Expected.
 		}
 	}
 
@@ -90,8 +49,7 @@ public class Object2ObjectOpenHashMapAllocFreeIteratorTest {
 		final Object2ObjectOpenHashMap<Integer, Integer> map = new Object2ObjectOpenHashMap<Integer, Integer>();
 		map.put(Integer.valueOf(1), Integer.valueOf(11));
 		map.put(Integer.valueOf(2), Integer.valueOf(22));
-		final AllocFreeEntryIterator<Integer, Integer> iterator = map.createAllocFreeIterator();
-		try (AllocFreeEntryIterator<Integer, Integer> it = map.iterateEntries(iterator)) {
+		try (AllocFreeEntryIterator<Integer, Integer> it = map.poolAllocFreeIterator()) {
 			map.put(Integer.valueOf(3), Integer.valueOf(33));
 			try {
 				it.hasNext();
@@ -111,28 +69,25 @@ public class Object2ObjectOpenHashMapAllocFreeIteratorTest {
 		for (int i = 0; i < 256; i++) {
 			map.put(Integer.valueOf(i), Integer.valueOf(i * 2));
 		}
-		final AllocFreeEntryIterator<Integer, Integer> reusable = map.createAllocFreeIterator();
 
 		long sink = 0;
 		for (int i = 0; i < 20000; i++) {
-			sink += iterateAll(map, reusable);
+			sink += iterateAll(map);
 		}
 
 		final long threadId = Thread.currentThread().getId();
 		final long before = threadMxBean.getThreadAllocatedBytes(threadId);
 		for (int i = 0; i < 50000; i++) {
-			sink += iterateAll(map, reusable);
+			sink += iterateAll(map);
 		}
 		final long allocated = threadMxBean.getThreadAllocatedBytes(threadId) - before;
 		assertEquals("Expected zero allocations in hot iteration path, but got " + allocated + " bytes", 0L, allocated);
 		assertEquals(0L, sink & 1L);
 	}
 
-	private static long iterateAll(
-			final Object2ObjectOpenHashMap<Integer, Integer> map,
-			final AllocFreeEntryIterator<Integer, Integer> reusable) {
+	private static long iterateAll(final Object2ObjectOpenHashMap<Integer, Integer> map) {
 		long sum = 0;
-		try (AllocFreeEntryIterator<Integer, Integer> it = map.iterateEntries(reusable)) {
+		try (AllocFreeEntryIterator<Integer, Integer> it = map.poolAllocFreeIterator()) {
 			while (it.hasNext()) {
 				final Object2ObjectMap.Entry<Integer, Integer> entry = it.next();
 				sum += entry.getKey().intValue();

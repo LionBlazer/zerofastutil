@@ -24,3 +24,4 @@ fastutil*.txt
 .project
 .ant-targets-build.xml
 .idea
+private-key.asc

@@ -54,15 +54,12 @@ public class OpenHashMapAllocFreeApiCoverageTest {
 	}
 
 	private static void assertAllocFreeApi(final Class<?> mapClass) throws Exception {
-		final Method create = mapClass.getMethod("createAllocFreeIterator");
-		assertNotNull(create);
-		final Class<?> iteratorType = create.getReturnType();
+		final Method pool = mapClass.getMethod("poolAllocFreeIterator");
+		assertNotNull(pool);
+		final Class<?> iteratorType = pool.getReturnType();
 		assertTrue("Iterator type should be generated as top-level class", iteratorType.getEnclosingClass() == null);
 		assertTrue("Iterator name should start with AllocFreeEntryIterator", iteratorType.getSimpleName().startsWith("AllocFreeEntryIterator"));
 		assertFalse("Iterator name should stay concise and not contain 'Map'", iteratorType.getSimpleName().contains("Map"));
-
-		final Method iterate = mapClass.getMethod("iterateEntries", iteratorType);
-		assertNotNull(iterate);
-		assertEquals(iteratorType, iterate.getReturnType());
+		assertEquals(iteratorType, pool.getReturnType());
 	}
 }

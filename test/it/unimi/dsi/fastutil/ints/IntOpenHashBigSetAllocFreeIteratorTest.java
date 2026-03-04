@@ -18,35 +18,13 @@ public class IntOpenHashBigSetAllocFreeIteratorTest {
 		set.add(4);
 		set.add(8);
 
-		final AllocFreeIteratorIntBig allocFreeIterator = set.createAllocFreeIterator();
 		int sum = 0;
-		try (AllocFreeIteratorIntBig it = set.iterateElements(allocFreeIterator)) {
+		try (AllocFreeIteratorIntBig it = set.poolAllocFreeIterator()) {
 			while (it.hasNext()) {
 				sum += it.nextInt();
 			}
 		}
 		assertEquals(12, sum);
-	}
-
-	@Test
-	public void testIteratorReuseAndInUseGuard() {
-		final IntOpenHashBigSet set = new IntOpenHashBigSet();
-		set.add(1);
-		set.add(2);
-
-		final AllocFreeIteratorIntBig reusable = set.createAllocFreeIterator();
-		try (AllocFreeIteratorIntBig it = set.iterateElements(reusable)) {
-			try {
-				set.iterateElements(reusable);
-				fail("Expected IllegalStateException");
-			} catch (final IllegalStateException expected) {
-				// Expected.
-			}
-			assertEquals(2, count(it));
-		}
-		try (AllocFreeIteratorIntBig it = set.iterateElements(reusable)) {
-			assertEquals(2, count(it));
-		}
 	}
 
 	@Test
@@ -58,35 +36,25 @@ public class IntOpenHashBigSetAllocFreeIteratorTest {
 		for (int i = 0; i < 512; i++) {
 			set.add(1000 + i);
 		}
-		final AllocFreeIteratorIntBig reusable = set.createAllocFreeIterator();
 
 		long sink = 0;
 		for (int i = 0; i < 20000; i++) {
-			sink += iterateAll(set, reusable);
+			sink += iterateAll(set);
 		}
 
 		final long threadId = Thread.currentThread().getId();
 		final long before = threadMxBean.getThreadAllocatedBytes(threadId);
 		for (int i = 0; i < 50000; i++) {
-			sink += iterateAll(set, reusable);
+			sink += iterateAll(set);
 		}
 		final long allocated = threadMxBean.getThreadAllocatedBytes(threadId) - before;
 		assertEquals("Expected zero allocations in hot iteration path, but got " + allocated + " bytes", 0L, allocated);
 		assertEquals(0L, sink & 1L);
 	}
 
-	private static int count(final AllocFreeIteratorIntBig it) {
-		int seen = 0;
-		while (it.hasNext()) {
-			it.nextInt();
-			seen++;
-		}
-		return seen;
-	}
-
-	private static long iterateAll(final IntOpenHashBigSet set, final AllocFreeIteratorIntBig reusable) {
+	private static long iterateAll(final IntOpenHashBigSet set) {
 		long sum = 0;
-		try (AllocFreeIteratorIntBig it = set.iterateElements(reusable)) {
+		try (AllocFreeIteratorIntBig it = set.poolAllocFreeIterator()) {
 			while (it.hasNext()) {
 				sum += it.nextInt();
 			}
