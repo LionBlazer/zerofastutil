@@ -893,6 +893,356 @@ def injectAllocFreeSetIteratorApi = { File javaFile, Map meta ->
 	return true
 }
 
+def replaceFirstMethod = { String source, def signatureRegex, String replacement, File javaFile, String description ->
+	def matcher = (source =~ signatureRegex)
+	if (!matcher.find()) {
+		throw new GradleException("Cannot find ${description} in ${javaFile}")
+	}
+	final int start = matcher.start()
+	final int openingBrace = source.indexOf('{', matcher.end() - 1)
+	if (openingBrace < 0) {
+		throw new GradleException("Cannot find opening brace for ${description} in ${javaFile}")
+	}
+	final Map methodBody = extractBracedBody(source, openingBrace)
+	return source.substring(0, start) + replacement + source.substring(methodBody.closingIndex + 1)
+}
+
+def isGeneratedArraysFile = { File javaFile ->
+	javaFile.name in [
+		"BooleanArrays.java",
+		"ByteArrays.java",
+		"CharArrays.java",
+		"DoubleArrays.java",
+		"FloatArrays.java",
+		"IntArrays.java",
+		"LongArrays.java",
+		"ObjectArrays.java",
+		"ShortArrays.java"
+	]
+}
+
+def patchGeneratedArraysStableSort = { File javaFile ->
+	String source = javaFile.getText("UTF-8")
+	if (source.contains("class StableSortBuffer") && source.contains("newStableSortBuffer(")) {
+		return false
+	}
+
+	final boolean objectArrays = javaFile.name == "ObjectArrays.java"
+	String primitiveElementType = null
+	if (!objectArrays) {
+		def primitiveTypeMatcher = (source =~ /public static final ([^\[]+)\[] EMPTY_ARRAY = \{\};/)
+		if (!primitiveTypeMatcher.find()) {
+			throw new GradleException("Cannot determine primitive element type for ${javaFile}")
+		}
+		primitiveElementType = primitiveTypeMatcher.group(1).trim()
+	}
+
+	def defaultEmptyMatcher = (source =~ /public static final [^;]+ DEFAULT_EMPTY_ARRAY = \{\};\s*/)
+	if (!defaultEmptyMatcher.find()) {
+		throw new GradleException("Cannot find DEFAULT_EMPTY_ARRAY in ${javaFile}")
+	}
+
+	final String bufferSupportBlock = objectArrays ? """
+	public static final class StableSortBuffer<K> {
+		private K[] support;
+
+		@SuppressWarnings("unchecked")
+		public StableSortBuffer() {
+			this(0);
+		}
+
+		@SuppressWarnings("unchecked")
+		public StableSortBuffer(final int initialCapacity) {
+			if (initialCapacity < 0) throw new IllegalArgumentException("Negative initialCapacity: " + initialCapacity);
+			support = (K[])(initialCapacity == 0 ? EMPTY_ARRAY : new Object[initialCapacity]);
+		}
+
+		public int capacity() {
+			return support.length;
+		}
+
+		@SuppressWarnings("unchecked")
+		private K[] prepare(final K[] source, final int from, final int to) {
+			Arrays.ensureFromTo(source.length, from, to);
+			if (support.length < to) support = (K[])new Object[to];
+			System.arraycopy(source, from, support, from, to - from);
+			return support;
+		}
+	}
+
+	public static <K> StableSortBuffer<K> newStableSortBuffer() {
+		return new StableSortBuffer<K>();
+	}
+
+	public static <K> StableSortBuffer<K> newStableSortBuffer(final int initialCapacity) {
+		return new StableSortBuffer<K>(initialCapacity);
+	}
+""" : """
+	public static final class StableSortBuffer {
+		private ${primitiveElementType}[] support;
+
+		public StableSortBuffer() {
+			this(0);
+		}
+
+		public StableSortBuffer(final int initialCapacity) {
+			if (initialCapacity < 0) throw new IllegalArgumentException("Negative initialCapacity: " + initialCapacity);
+			support = initialCapacity == 0 ? EMPTY_ARRAY : new ${primitiveElementType}[initialCapacity];
+		}
+
+		public int capacity() {
+			return support.length;
+		}
+
+		private ${primitiveElementType}[] prepare(final ${primitiveElementType}[] source, final int from, final int to) {
+			Arrays.ensureFromTo(source.length, from, to);
+			if (support.length < to) support = new ${primitiveElementType}[to];
+			System.arraycopy(source, from, support, from, to - from);
+			return support;
+		}
+	}
+
+	public static StableSortBuffer newStableSortBuffer() {
+		return new StableSortBuffer();
+	}
+
+	public static StableSortBuffer newStableSortBuffer(final int initialCapacity) {
+		return new StableSortBuffer(initialCapacity);
+	}
+"""
+
+	source = source.substring(0, defaultEmptyMatcher.end()) + "\n" + bufferSupportBlock + source.substring(defaultEmptyMatcher.end())
+
+	def naturalSortMatcher = (source =~ /public static(?:\s+<K>)?\s+void stableSort\(final ([^,\s]+)\s+a\[\], final int from, final int to\)\s*\{/)
+	if (!naturalSortMatcher.find()) {
+		throw new GradleException("Cannot find natural stableSort(from, to) in ${javaFile}")
+	}
+	final String arrayElementType = naturalSortMatcher.group(1).trim()
+	final boolean genericMethods = naturalSortMatcher.group(0).contains("<K>")
+
+	def comparatorSortMatcher = (source =~ /public static(?:\s+<K>)?\s+void stableSort\(final [^,\s]+\s+a\[\], final int from, final int to, ([^)]*?) comp\)\s*\{/)
+	if (!comparatorSortMatcher.find()) {
+		throw new GradleException("Cannot find comparator stableSort(from, to, comp) in ${javaFile}")
+	}
+	final String comparatorType = comparatorSortMatcher.group(1).trim()
+	final String genericPrefix = genericMethods ? "<K> " : ""
+	final String bufferType = objectArrays ? "StableSortBuffer<K>" : "StableSortBuffer"
+
+	final String additionalStableSortMethods = """
+	public static ${genericPrefix}void stableSort(final ${arrayElementType} a[], final int from, final int to, final ${bufferType} buffer) {
+		mergeSort(a, from, to, java.util.Objects.requireNonNull(buffer, "buffer").prepare(a, from, to));
+	}
+
+	public static ${genericPrefix}void stableSort(final ${arrayElementType} a[], final ${bufferType} buffer) {
+		stableSort(a, 0, a.length, buffer);
+	}
+
+	public static ${genericPrefix}void stableSort(final ${arrayElementType} a[], final int from, final int to, ${comparatorType} comp, final ${bufferType} buffer) {
+		if (comp == null) {
+			stableSort(a, from, to, buffer);
+			return;
+		}
+		mergeSort(a, from, to, comp, java.util.Objects.requireNonNull(buffer, "buffer").prepare(a, from, to));
+	}
+
+	public static ${genericPrefix}void stableSort(final ${arrayElementType} a[], ${comparatorType} comp, final ${bufferType} buffer) {
+		stableSort(a, 0, a.length, comp, buffer);
+	}
+"""
+
+	source = source.substring(0, naturalSortMatcher.start()) + additionalStableSortMethods + "\n" + source.substring(naturalSortMatcher.start())
+
+	javaFile.write(source, "UTF-8")
+	return true
+}
+
+def isGeneratedListInterfaceFile = { File javaFile ->
+	final String name = javaFile.name
+	name.endsWith("List.java") &&
+			!name.endsWith("BigList.java") &&
+			!name.endsWith("ArrayList.java") &&
+			!name.endsWith("ImmutableList.java") &&
+			!name.endsWith("Lists.java") &&
+			!name.startsWith("Abstract")
+}
+
+def patchGeneratedListSortApi = { File javaFile ->
+	String source = javaFile.getText("UTF-8")
+	if (source.contains("sortWithBuffer(")) {
+		return false
+	}
+
+	def arraysMatcher = (source =~ /([A-Za-z0-9_]+Arrays)\.stableSort\(/)
+	if (!arraysMatcher.find()) {
+		return false
+	}
+	final String arraysClass = arraysMatcher.group(1)
+
+	def elementsMatcher = (source =~ /([A-Za-z0-9_<>\[\]]+)\s+elements\s*=\s*([^;]+);/)
+	if (!elementsMatcher.find()) {
+		throw new GradleException("Cannot find temporary elements declaration in ${javaFile}")
+	}
+	final String elementsType = elementsMatcher.group(1).trim()
+	final String toArrayExpr = elementsMatcher.group(2).trim()
+
+	def primitiveSortMatcher = (source =~ /default void sort\(final ([A-Za-z0-9_]+Comparator) comparator\)\s*\{/)
+	if (primitiveSortMatcher.find()) {
+		final String comparatorType = primitiveSortMatcher.group(1).trim()
+		final String injectedMethods = """
+default void sort(final ${comparatorType} comparator) {
+		${elementsType} elements = ${toArrayExpr};
+		${arraysClass}.stableSort(elements, 0, elements.length, comparator);
+		setElements(elements);
+	}
+
+	default void sort(final ${comparatorType} comparator, final ${arraysClass}.StableSortBuffer buffer) {
+		${elementsType} elements = ${toArrayExpr};
+		${arraysClass}.stableSort(elements, 0, elements.length, comparator, buffer);
+		setElements(elements);
+	}
+
+	default void sortWithBuffer(final ${arraysClass}.StableSortBuffer buffer) {
+		sort((${comparatorType})null, buffer);
+	}
+"""
+		source = replaceFirstMethod(
+			source,
+			/default void sort\(final [A-Za-z0-9_]+Comparator comparator\)\s*\{/,
+			injectedMethods,
+			javaFile,
+			"type-specific list sort"
+		)
+	} else {
+		def referenceSortMatcher = (source =~ /default void sort\(final (java\.util\.Comparator<\? super [^>]+>) comparator\)\s*\{/)
+		if (!referenceSortMatcher.find()) {
+			return false
+		}
+		final String comparatorType = referenceSortMatcher.group(1).trim()
+		final String genericType = elementsType.endsWith("[]") ? elementsType.substring(0, elementsType.length() - 2).trim() : "K"
+
+		final String injectedMethods = """
+default void sort(final ${comparatorType} comparator) {
+		${elementsType} elements = ${toArrayExpr};
+		if (comparator == null) {
+			${arraysClass}.stableSort(elements, 0, elements.length);
+		} else {
+			${arraysClass}.stableSort(elements, 0, elements.length, (java.util.Comparator<${genericType}>)comparator);
+		}
+		setElements(elements);
+	}
+
+	default void sort(final ${comparatorType} comparator, final ${arraysClass}.StableSortBuffer<${genericType}> buffer) {
+		${elementsType} elements = ${toArrayExpr};
+		if (comparator == null) {
+			${arraysClass}.stableSort(elements, 0, elements.length, buffer);
+		} else {
+			${arraysClass}.stableSort(elements, 0, elements.length, (java.util.Comparator<${genericType}>)comparator, buffer);
+		}
+		setElements(elements);
+	}
+
+	default void sortWithBuffer(final ${arraysClass}.StableSortBuffer<${genericType}> buffer) {
+		sort(null, buffer);
+	}
+"""
+		source = replaceFirstMethod(
+			source,
+			/default void sort\(final java\.util\.Comparator<\? super [^>]+> comparator\)\s*\{/,
+			injectedMethods,
+			javaFile,
+			"reference list sort"
+		)
+	}
+
+	javaFile.write(source, "UTF-8")
+	return true
+}
+
+def isGeneratedArrayListFile = { File javaFile ->
+	final String name = javaFile.name
+	name.endsWith("ArrayList.java") &&
+			!name.endsWith("BigArrayBigList.java") &&
+			!name.endsWith("ArrayFrontCodedList.java")
+}
+
+def patchGeneratedArrayListSortApi = { File javaFile ->
+	String source = javaFile.getText("UTF-8")
+	if (source.contains("sortWithBuffer(")) {
+		return false
+	}
+
+	def arraysMatcher = (source =~ /([A-Za-z0-9_]+Arrays)\.stableSort\(a, 0, size/)
+	if (!arraysMatcher.find()) {
+		return false
+	}
+	final String arraysClass = arraysMatcher.group(1)
+
+	def sortMatcher = (source =~ /public void sort\(final ([^)]+) comp\)\s*\{/)
+	if (!sortMatcher.find()) {
+		return false
+	}
+	final String comparatorType = sortMatcher.group(1).trim()
+	final boolean genericComparator = comparatorType.contains("Comparator<? super")
+	String genericType = null
+	if (genericComparator) {
+		def classGenericMatcher = (source =~ /public class [A-Za-z0-9_]+<([A-Za-z0-9_]+)>/)
+		genericType = classGenericMatcher.find() ? classGenericMatcher.group(1).trim() : "K"
+	}
+
+	final String sortMethods = genericComparator ? """
+public void sort(final ${comparatorType} comp) {
+		if (comp == null) {
+			${arraysClass}.stableSort(a, 0, size);
+		} else {
+			${arraysClass}.stableSort(a, 0, size, (Comparator<${genericType}>)comp);
+		}
+	}
+
+	public void sort(final ${comparatorType} comp, final ${arraysClass}.StableSortBuffer<${genericType}> buffer) {
+		if (comp == null) {
+			${arraysClass}.stableSort(a, 0, size, buffer);
+		} else {
+			${arraysClass}.stableSort(a, 0, size, (Comparator<${genericType}>)comp, buffer);
+		}
+	}
+
+	public void sortWithBuffer(final ${arraysClass}.StableSortBuffer<${genericType}> buffer) {
+		sort(null, buffer);
+	}
+""" : """
+public void sort(final ${comparatorType} comp) {
+		if (comp == null) {
+			${arraysClass}.stableSort(a, 0, size);
+		} else {
+			${arraysClass}.stableSort(a, 0, size, comp);
+		}
+	}
+
+	public void sort(final ${comparatorType} comp, final ${arraysClass}.StableSortBuffer buffer) {
+		if (comp == null) {
+			${arraysClass}.stableSort(a, 0, size, buffer);
+		} else {
+			${arraysClass}.stableSort(a, 0, size, comp, buffer);
+		}
+	}
+
+	public void sortWithBuffer(final ${arraysClass}.StableSortBuffer buffer) {
+		sort(null, buffer);
+	}
+"""
+
+	source = replaceFirstMethod(
+		source,
+		/public void sort\(final [^)]+ comp\)\s*\{/,
+		sortMethods,
+		javaFile,
+		"array-list sort"
+	)
+
+	javaFile.write(source, "UTF-8")
+	return true
+}
+
 java {
 	sourceCompatibility = JavaVersion.VERSION_1_8
 	targetCompatibility = JavaVersion.VERSION_1_8
@@ -938,6 +1288,9 @@ tasks.register("prepareFallbackSources", Sync) {
 		int generatedMapIterators = 0
 		int patchedSets = 0
 		int generatedSetIterators = 0
+		int patchedArrays = 0
+		int patchedListInterfaces = 0
+		int patchedArrayLists = 0
 		fileTree(destinationDir).matching { include("**/*.java") }.files.each { File javaFile ->
 			if (isGeneratedOpenHashMapFile(javaFile)) {
 				final Map meta = parseOpenHashMapMetadata(javaFile)
@@ -957,9 +1310,26 @@ tasks.register("prepareFallbackSources", Sync) {
 				iteratorFile.write(buildAllocFreeSetIteratorClassSource(meta), "UTF-8")
 				generatedSetIterators++
 			}
+			if (isGeneratedArraysFile(javaFile)) {
+				if (patchGeneratedArraysStableSort(javaFile)) {
+					patchedArrays++
+				}
+			}
+			if (isGeneratedListInterfaceFile(javaFile)) {
+				if (patchGeneratedListSortApi(javaFile)) {
+					patchedListInterfaces++
+				}
+			}
+			if (isGeneratedArrayListFile(javaFile)) {
+				if (patchGeneratedArrayListSortApi(javaFile)) {
+					patchedArrayLists++
+				}
+			}
 		}
 		logger.lifecycle("Injected allocation-free iterator API into ${patchedMaps} generated OpenHashMap classes and generated ${generatedMapIterators} map iterator classes.")
 		logger.lifecycle("Injected allocation-free iterator API into ${patchedSets} generated OpenHashSet classes and generated ${generatedSetIterators} set iterator classes.")
+		logger.lifecycle("Injected allocation-free stable-sort support into ${patchedArrays} generated *Arrays classes.")
+		logger.lifecycle("Injected allocation-free list sort API into ${patchedListInterfaces} generated *List interfaces and ${patchedArrayLists} generated *ArrayList classes.")
 	}
 }
 
