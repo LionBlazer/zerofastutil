@@ -11,7 +11,7 @@ import org.junit.Test;
 
 import com.sun.management.ThreadMXBean;
 
-public class ObjectArrayListAllocFreeSortTest {
+public class ObjectArrayListZeroAllocSortTest {
 	private static final Comparator<String> DESCENDING = new Comparator<String>() {
 		@Override
 		public int compare(final String left, final String right) {

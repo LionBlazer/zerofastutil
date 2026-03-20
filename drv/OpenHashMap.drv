@@ -1448,12 +1448,12 @@ public class OPEN_HASH_MAP KEY_VALUE_GENERIC extends ABSTRACT_MAP KEY_VALUE_GENE
 		}
 	}
 
-	/** A reusable, allocation-free entry iterator.
+	/** A reusable, zero-alloc entry iterator.
 	 *
-	 * <p>Create once via {@link #createAllocFreeIterator()}, then repeatedly open iteration sessions
-	 * using {@link #iterateEntries(AllocFreeEntryIterator)} and close via try-with-resources.
+	 * <p>Create once via {@link #createZeroAllocIterator()}, then repeatedly open iteration sessions
+	 * using {@link #iterateEntries(ZeroAllocEntryIterator)} and close via try-with-resources.
 	 */
-	public final class AllocFreeEntryIterator implements java.util.Iterator<MAP.Entry KEY_VALUE_GENERIC>, AutoCloseable, Iterable<MAP.Entry KEY_VALUE_GENERIC> {
+	public final class ZeroAllocEntryIterator implements java.util.Iterator<MAP.Entry KEY_VALUE_GENERIC>, AutoCloseable, Iterable<MAP.Entry KEY_VALUE_GENERIC> {
 		private static final int NEXT_UNKNOWN = Integer.MIN_VALUE;
 		private static final int NEXT_NONE = -1;
 
@@ -1489,7 +1489,7 @@ public class OPEN_HASH_MAP KEY_VALUE_GENERIC extends ABSTRACT_MAP KEY_VALUE_GENE
 
 		private void ensureOpenAndUnmodified() {
 			if (!inUse) throw new IllegalStateException("Iterator is not in use.");
-			if (expectedSize != size) throw new IllegalStateException("Map was structurally modified during alloc-free iteration.");
+			if (expectedSize != size) throw new IllegalStateException("Map was structurally modified during zero-alloc iteration.");
 		}
 
 		private void computeNext() {
@@ -1556,20 +1556,20 @@ public class OPEN_HASH_MAP KEY_VALUE_GENERIC extends ABSTRACT_MAP KEY_VALUE_GENE
 		}
 	}
 
-	/** Creates a reusable allocation-free entry iterator instance. */
-	public AllocFreeEntryIterator createAllocFreeIterator() {
-		return new AllocFreeEntryIterator();
+	/** Creates a reusable zero-alloc entry iterator instance. */
+	public ZeroAllocEntryIterator createZeroAllocIterator() {
+		return new ZeroAllocEntryIterator();
 	}
 
-	/** Opens an allocation-free iteration session on a reusable iterator.
+	/** Opens a zero-alloc iteration session on a reusable iterator.
 	 *
-	 * @param iterator reusable iterator created by {@link #createAllocFreeIterator()}.
+	 * @param iterator reusable iterator created by {@link #createZeroAllocIterator()}.
 	 * @return the same iterator, opened for iteration.
 	 * @throws NullPointerException if {@code iterator} is {@code null}.
 	 * @throws IllegalArgumentException if {@code iterator} belongs to another map instance.
 	 * @throws IllegalStateException if {@code iterator} is already in use.
 	 */
-	public AllocFreeEntryIterator iterateEntries(final AllocFreeEntryIterator iterator) {
+	public ZeroAllocEntryIterator iterateEntries(final ZeroAllocEntryIterator iterator) {
 		if (iterator == null) throw new NullPointerException("iterator");
 		if (! iterator.isOwner(this)) throw new IllegalArgumentException("Iterator was created for another map instance.");
 		iterator.open();

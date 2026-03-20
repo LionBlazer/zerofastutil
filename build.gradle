@@ -58,7 +58,7 @@ def primitiveToBoxedType = [
 	"double": "Double"
 ]
 
-def buildAllocFreeIteratorClassName = { String ownerClass ->
+def buildZeroAllocIteratorClassName = { String ownerClass ->
 	final String baseName
 	final String variantSuffix
 	if (ownerClass.endsWith("LinkedOpenCustomHashMap")) {
@@ -78,9 +78,9 @@ def buildAllocFreeIteratorClassName = { String ownerClass ->
 	}
 
 	if (baseName == "Object2Object" && variantSuffix.isEmpty()) {
-		return "AllocFreeEntryIterator"
+		return "ZeroAllocEntryIterator"
 	}
-	return "AllocFreeEntryIterator${baseName}${variantSuffix}"
+	return "ZeroAllocEntryIterator${baseName}${variantSuffix}"
 }
 
 def isGeneratedOpenHashMapFile = { File javaFile ->
@@ -130,7 +130,7 @@ def parseOpenHashMapMetadata = { File javaFile ->
 	String source = javaFile.getText("UTF-8")
 	final String ownerClass = javaFile.name.substring(0, javaFile.name.length() - ".java".length())
 	final boolean linked = javaFile.name.contains("LinkedOpen")
-	final String iteratorClass = buildAllocFreeIteratorClassName(ownerClass)
+	final String iteratorClass = buildZeroAllocIteratorClassName(ownerClass)
 
 	def packageMatcher = (source =~ /(?m)^package\s+([a-zA-Z0-9_.]+);/)
 	if (!packageMatcher.find()) {
@@ -210,7 +210,7 @@ def parseOpenHashMapMetadata = { File javaFile ->
 	]
 }
 
-def buildAllocFreeIteratorClassSource = { Map meta ->
+def buildZeroAllocIteratorClassSource = { Map meta ->
 	final String staticTypeParams = meta.typeDecl ? meta.typeDecl + " " : ""
 	final String entryView = """
 		private final class EntryView implements ${meta.mapEntryInterfaces} {
@@ -252,7 +252,7 @@ ${meta.pooledMapEntryBody}
 
 		private void ensureOpenAndUnmodified() {
 			if (!inUse) throw new IllegalStateException("Iterator is not in use.");
-			if (expectedSize != owner.size) throw new IllegalStateException("Map was structurally modified during alloc-free iteration.");
+			if (expectedSize != owner.size) throw new IllegalStateException("Map was structurally modified during zero-alloc iteration.");
 		}
 
 		private void computeNext() {
@@ -339,7 +339,7 @@ ${entryView}
 
 		private void ensureOpenAndUnmodified() {
 			if (!inUse) throw new IllegalStateException("Iterator is not in use.");
-			if (expectedSize != owner.size) throw new IllegalStateException("Map was structurally modified during alloc-free iteration.");
+			if (expectedSize != owner.size) throw new IllegalStateException("Map was structurally modified during zero-alloc iteration.");
 		}
 
 		private void computeNext() {
@@ -405,25 +405,25 @@ ${entryView}
 import java.util.NoSuchElementException;
 import java.util.Map;
 
-/** Reusable, allocation-free entry iterator for {@link ${meta.ownerClass}}. */
+/** Reusable, zero-alloc entry iterator for {@link ${meta.ownerClass}}. */
 public final class ${meta.iteratorClass}${meta.typeDecl} implements java.util.Iterator<${meta.entryType}>, AutoCloseable, Iterable<${meta.entryType}> {
 ${core}
 }
 """
 }
 
-def injectAllocFreeIteratorApi = { File javaFile, Map meta ->
+def injectZeroAllocIteratorApi = { File javaFile, Map meta ->
 	String source = meta.source
-	if (source.contains("poolAllocFreeIterator()") && source.contains(meta.iteratorClass)) {
+	if (source.contains("poolZeroAllocIterator()") && source.contains(meta.iteratorClass)) {
 		return false
 	}
 
-	final String allocFreeMethods = """
-	/** Borrows an allocation-free pooled entry iterator.
+	final String zeroAllocMethods = """
+	/** Borrows a zero-alloc pooled entry iterator.
 	 *
 	 * <p>The iterator must be closed after use to return it back to the current thread pool.
 	 */
-	public ${meta.iteratorTypeUse} poolAllocFreeIterator() {
+	public ${meta.iteratorTypeUse} poolZeroAllocIterator() {
 		return ${meta.iteratorClass}.acquire(this);
 	}
 """
@@ -433,12 +433,12 @@ def injectAllocFreeIteratorApi = { File javaFile, Map meta ->
 		throw new GradleException("Cannot find MapIterator section in ${javaFile}")
 	}
 
-	source = source.substring(0, marker) + "\n\n" + allocFreeMethods + "\n" + source.substring(marker)
+	source = source.substring(0, marker) + "\n\n" + zeroAllocMethods + "\n" + source.substring(marker)
 	javaFile.write(source, "UTF-8")
 	return true
 }
 
-def buildAllocFreeSetIteratorClassName = { String ownerClass ->
+def buildZeroAllocSetIteratorClassName = { String ownerClass ->
 	final String baseName
 	final String variantSuffix
 	if (ownerClass.endsWith("LinkedOpenCustomHashSet")) {
@@ -461,9 +461,9 @@ def buildAllocFreeSetIteratorClassName = { String ownerClass ->
 	}
 
 	if (baseName == "Object" && variantSuffix.isEmpty()) {
-		return "AllocFreeIterator"
+		return "ZeroAllocIterator"
 	}
-	return "AllocFreeIterator${baseName}${variantSuffix}"
+	return "ZeroAllocIterator${baseName}${variantSuffix}"
 }
 
 def isGeneratedOpenHashSetFile = { File javaFile ->
@@ -476,7 +476,7 @@ def parseOpenHashSetMetadata = { File javaFile ->
 	final String ownerClass = javaFile.name.substring(0, javaFile.name.length() - ".java".length())
 	final boolean linked = ownerClass.contains("LinkedOpen")
 	final boolean big = ownerClass.endsWith("OpenHashBigSet")
-	final String iteratorClass = buildAllocFreeSetIteratorClassName(ownerClass)
+	final String iteratorClass = buildZeroAllocSetIteratorClassName(ownerClass)
 
 	def packageMatcher = (source =~ /(?m)^package\s+([a-zA-Z0-9_.]+);/)
 	if (!packageMatcher.find()) {
@@ -583,7 +583,7 @@ def parseOpenHashSetMetadata = { File javaFile ->
 	]
 }
 
-def buildAllocFreeSetIteratorClassSource = { Map meta ->
+def buildZeroAllocSetIteratorClassSource = { Map meta ->
 	final String staticTypeParams = meta.typeDecl ? meta.typeDecl + " " : ""
 
 	final String core = meta.linked ? """
@@ -618,7 +618,7 @@ def buildAllocFreeSetIteratorClassSource = { Map meta ->
 
 		private void ensureOpenAndUnmodified() {
 			if (!inUse) throw new IllegalStateException("Iterator is not in use.");
-			if (expectedSize != owner.size) throw new IllegalStateException("Set was structurally modified during alloc-free iteration.");
+			if (expectedSize != owner.size) throw new IllegalStateException("Set was structurally modified during zero-alloc iteration.");
 		}
 
 		private void computeNext() {
@@ -701,7 +701,7 @@ def buildAllocFreeSetIteratorClassSource = { Map meta ->
 
 		private void ensureOpenAndUnmodified() {
 			if (!inUse) throw new IllegalStateException("Iterator is not in use.");
-			if (expectedSize != owner.size) throw new IllegalStateException("Set was structurally modified during alloc-free iteration.");
+			if (expectedSize != owner.size) throw new IllegalStateException("Set was structurally modified during zero-alloc iteration.");
 		}
 
 		private void computeNext() {
@@ -794,7 +794,7 @@ def buildAllocFreeSetIteratorClassSource = { Map meta ->
 
 		private void ensureOpenAndUnmodified() {
 			if (!inUse) throw new IllegalStateException("Iterator is not in use.");
-			if (expectedSize != owner.size) throw new IllegalStateException("Set was structurally modified during alloc-free iteration.");
+			if (expectedSize != owner.size) throw new IllegalStateException("Set was structurally modified during zero-alloc iteration.");
 		}
 
 		private void computeNext() {
@@ -857,25 +857,25 @@ def buildAllocFreeSetIteratorClassSource = { Map meta ->
 
 import java.util.NoSuchElementException;
 
-/** Reusable, allocation-free iterator for {@link ${meta.ownerClass}}. */
+/** Reusable, zero-alloc iterator for {@link ${meta.ownerClass}}. */
 public final class ${meta.iteratorClass}${meta.typeDecl} implements ${meta.iteratorInterface}, AutoCloseable, Iterable<${meta.iterableType}> {
 ${core}
 }
 """
 }
 
-def injectAllocFreeSetIteratorApi = { File javaFile, Map meta ->
+def injectZeroAllocSetIteratorApi = { File javaFile, Map meta ->
 	String source = meta.source
-	if (source.contains("poolAllocFreeIterator()") && source.contains(meta.iteratorClass)) {
+	if (source.contains("poolZeroAllocIterator()") && source.contains(meta.iteratorClass)) {
 		return false
 	}
 
-	final String allocFreeMethods = """
-	/** Borrows an allocation-free pooled iterator.
+	final String zeroAllocMethods = """
+	/** Borrows a zero-alloc pooled iterator.
 	 *
 	 * <p>The iterator must be closed after use to return it back to the current thread pool.
 	 */
-	public ${meta.iteratorTypeUse} poolAllocFreeIterator() {
+	public ${meta.iteratorTypeUse} poolZeroAllocIterator() {
 		return ${meta.iteratorClass}.acquire(this);
 	}
 """
@@ -888,7 +888,7 @@ def injectAllocFreeSetIteratorApi = { File javaFile, Map meta ->
 		throw new GradleException("Cannot find SetIterator section in ${javaFile}")
 	}
 
-	source = source.substring(0, marker) + "\n\n" + allocFreeMethods + "\n" + source.substring(marker)
+	source = source.substring(0, marker) + "\n\n" + zeroAllocMethods + "\n" + source.substring(marker)
 	javaFile.write(source, "UTF-8")
 	return true
 }
@@ -1294,20 +1294,20 @@ tasks.register("prepareFallbackSources", Sync) {
 		fileTree(destinationDir).matching { include("**/*.java") }.files.each { File javaFile ->
 			if (isGeneratedOpenHashMapFile(javaFile)) {
 				final Map meta = parseOpenHashMapMetadata(javaFile)
-				if (injectAllocFreeIteratorApi(javaFile, meta)) {
+				if (injectZeroAllocIteratorApi(javaFile, meta)) {
 					patchedMaps++
 				}
 				final File iteratorFile = new File(javaFile.parentFile, "${meta.iteratorClass}.java")
-				iteratorFile.write(buildAllocFreeIteratorClassSource(meta), "UTF-8")
+				iteratorFile.write(buildZeroAllocIteratorClassSource(meta), "UTF-8")
 				generatedMapIterators++
 			}
 			if (isGeneratedOpenHashSetFile(javaFile)) {
 				final Map meta = parseOpenHashSetMetadata(javaFile)
-				if (injectAllocFreeSetIteratorApi(javaFile, meta)) {
+				if (injectZeroAllocSetIteratorApi(javaFile, meta)) {
 					patchedSets++
 				}
 				final File iteratorFile = new File(javaFile.parentFile, "${meta.iteratorClass}.java")
-				iteratorFile.write(buildAllocFreeSetIteratorClassSource(meta), "UTF-8")
+				iteratorFile.write(buildZeroAllocSetIteratorClassSource(meta), "UTF-8")
 				generatedSetIterators++
 			}
 			if (isGeneratedArraysFile(javaFile)) {

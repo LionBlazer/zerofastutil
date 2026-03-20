@@ -27,38 +27,38 @@ import it.unimi.dsi.fastutil.objects.Reference2ReferenceLinkedOpenHashMap;
 import it.unimi.dsi.fastutil.objects.Reference2ReferenceOpenCustomHashMap;
 import it.unimi.dsi.fastutil.objects.Reference2ReferenceOpenHashMap;
 
-public class OpenHashMapAllocFreeApiCoverageTest {
+public class OpenHashMapZeroAllocApiCoverageTest {
 
 	@Test
-	public void testAllocFreeApiOnGeneratedOpenHashMapFamilies() throws Exception {
-		assertAllocFreeApi(Object2ObjectOpenHashMap.class);
-		assertAllocFreeApi(Object2ObjectOpenCustomHashMap.class);
-		assertAllocFreeApi(Object2ObjectLinkedOpenHashMap.class);
-		assertAllocFreeApi(Object2ObjectLinkedOpenCustomHashMap.class);
+	public void testZeroAllocApiOnGeneratedOpenHashMapFamilies() throws Exception {
+		assertZeroAllocApi(Object2ObjectOpenHashMap.class);
+		assertZeroAllocApi(Object2ObjectOpenCustomHashMap.class);
+		assertZeroAllocApi(Object2ObjectLinkedOpenHashMap.class);
+		assertZeroAllocApi(Object2ObjectLinkedOpenCustomHashMap.class);
 
-		assertAllocFreeApi(Int2IntOpenHashMap.class);
-		assertAllocFreeApi(Int2IntOpenCustomHashMap.class);
-		assertAllocFreeApi(Int2IntLinkedOpenHashMap.class);
-		assertAllocFreeApi(Int2ObjectOpenHashMap.class);
+		assertZeroAllocApi(Int2IntOpenHashMap.class);
+		assertZeroAllocApi(Int2IntOpenCustomHashMap.class);
+		assertZeroAllocApi(Int2IntLinkedOpenHashMap.class);
+		assertZeroAllocApi(Int2ObjectOpenHashMap.class);
 
-		assertAllocFreeApi(Reference2ReferenceOpenHashMap.class);
-		assertAllocFreeApi(Reference2ReferenceOpenCustomHashMap.class);
-		assertAllocFreeApi(Reference2ReferenceLinkedOpenHashMap.class);
+		assertZeroAllocApi(Reference2ReferenceOpenHashMap.class);
+		assertZeroAllocApi(Reference2ReferenceOpenCustomHashMap.class);
+		assertZeroAllocApi(Reference2ReferenceLinkedOpenHashMap.class);
 
-		assertAllocFreeApi(Byte2CharOpenHashMap.class);
-		assertAllocFreeApi(Char2ByteOpenHashMap.class);
-		assertAllocFreeApi(Double2FloatOpenHashMap.class);
-		assertAllocFreeApi(Long2ObjectOpenHashMap.class);
-		assertAllocFreeApi(Object2IntOpenHashMap.class);
-		assertAllocFreeApi(Object2LongOpenHashMap.class);
+		assertZeroAllocApi(Byte2CharOpenHashMap.class);
+		assertZeroAllocApi(Char2ByteOpenHashMap.class);
+		assertZeroAllocApi(Double2FloatOpenHashMap.class);
+		assertZeroAllocApi(Long2ObjectOpenHashMap.class);
+		assertZeroAllocApi(Object2IntOpenHashMap.class);
+		assertZeroAllocApi(Object2LongOpenHashMap.class);
 	}
 
-	private static void assertAllocFreeApi(final Class<?> mapClass) throws Exception {
-		final Method pool = mapClass.getMethod("poolAllocFreeIterator");
+	private static void assertZeroAllocApi(final Class<?> mapClass) throws Exception {
+		final Method pool = mapClass.getMethod("poolZeroAllocIterator");
 		assertNotNull(pool);
 		final Class<?> iteratorType = pool.getReturnType();
 		assertTrue("Iterator type should be generated as top-level class", iteratorType.getEnclosingClass() == null);
-		assertTrue("Iterator name should start with AllocFreeEntryIterator", iteratorType.getSimpleName().startsWith("AllocFreeEntryIterator"));
+		assertTrue("Iterator name should start with ZeroAllocEntryIterator", iteratorType.getSimpleName().startsWith("ZeroAllocEntryIterator"));
 		assertFalse("Iterator name should stay concise and not contain 'Map'", iteratorType.getSimpleName().contains("Map"));
 		assertEquals(iteratorType, pool.getReturnType());
 	}

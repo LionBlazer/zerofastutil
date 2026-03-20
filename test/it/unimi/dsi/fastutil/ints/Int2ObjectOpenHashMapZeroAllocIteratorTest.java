@@ -1,7 +1,7 @@
 package it.unimi.dsi.fastutil.ints;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.fail;
+import static org.junit.Assert.assertSame;
 
 import java.lang.management.ManagementFactory;
 
@@ -10,50 +10,34 @@ import org.junit.Test;
 
 import com.sun.management.ThreadMXBean;
 
-public class IntOpenCustomHashSetAllocFreeIteratorTest {
-
-	private static final IntHash.Strategy STRATEGY = new IntHash.Strategy() {
-		private static final long serialVersionUID = 1L;
-
-		@Override
-		public int hashCode(final int e) {
-			return e;
-		}
-
-		@Override
-		public boolean equals(final int a, final int b) {
-			return a == b;
-		}
-	};
+public class Int2ObjectOpenHashMapZeroAllocIteratorTest {
 
 	@Test
 	public void testSimpleUsageExample() {
-		final IntOpenCustomHashSet set = new IntOpenCustomHashSet(STRATEGY);
-		set.add(5);
-		set.add(7);
+		final Int2ObjectOpenHashMap<String> map = new Int2ObjectOpenHashMap<String>();
+		map.put(1, "one");
+		map.put(2, "two");
 
-		int sum = 0;
-		try (AllocFreeIteratorIntCustom it = set.poolAllocFreeIterator()) {
-			while (it.hasNext()) {
-				sum += it.nextInt();
+		int seen = 0;
+		try (ZeroAllocEntryIteratorInt2Object<String> it = map.poolZeroAllocIterator()) {
+			for (Int2ObjectMap.Entry<String> entry : it) {
+				seen += entry.getIntKey();
+				seen += entry.getValue().length();
 			}
 		}
-		assertEquals(12, sum);
+		assertEquals(9, seen);
 	}
 
 	@Test
-	public void testStructuralModificationGuard() {
-		final IntOpenCustomHashSet set = new IntOpenCustomHashSet(STRATEGY);
-		set.add(1);
-		set.add(2);
-		try (AllocFreeIteratorIntCustom it = set.poolAllocFreeIterator()) {
-			set.add(3);
-			try {
-				it.hasNext();
-				fail("Expected IllegalStateException");
-			} catch (final IllegalStateException expected) {
-				// Expected.
-			}
+	public void testEntryObjectIsReused() {
+		final Int2ObjectOpenHashMap<String> map = new Int2ObjectOpenHashMap<String>();
+		map.put(1, "one");
+		map.put(2, "two");
+
+		try (ZeroAllocEntryIteratorInt2Object<String> it = map.poolZeroAllocIterator()) {
+			final Int2ObjectMap.Entry<String> first = it.next();
+			final Int2ObjectMap.Entry<String> second = it.next();
+			assertSame(first, second);
 		}
 	}
 
@@ -62,31 +46,33 @@ public class IntOpenCustomHashSetAllocFreeIteratorTest {
 		final ThreadMXBean threadMxBean = allocationThreadMxBean();
 		Assume.assumeTrue(threadMxBean != null);
 
-		final IntOpenCustomHashSet set = new IntOpenCustomHashSet(512, STRATEGY);
-		for (int i = 0; i < 512; i++) {
-			set.add(1000 + i);
+		final Int2ObjectOpenHashMap<String> map = new Int2ObjectOpenHashMap<String>(256);
+		for (int i = 0; i < 256; i++) {
+			map.put(i, Integer.toString(i));
 		}
 
 		long sink = 0;
 		for (int i = 0; i < 20000; i++) {
-			sink += iterateAll(set);
+			sink += iterateAll(map);
 		}
 
 		final long threadId = Thread.currentThread().getId();
 		final long before = threadMxBean.getThreadAllocatedBytes(threadId);
 		for (int i = 0; i < 50000; i++) {
-			sink += iterateAll(set);
+			sink += iterateAll(map);
 		}
 		final long allocated = threadMxBean.getThreadAllocatedBytes(threadId) - before;
 		assertEquals("Expected zero allocations in hot iteration path, but got " + allocated + " bytes", 0L, allocated);
 		assertEquals(0L, sink & 1L);
 	}
 
-	private static long iterateAll(final IntOpenCustomHashSet set) {
+	private static long iterateAll(final Int2ObjectOpenHashMap<String> map) {
 		long sum = 0;
-		try (AllocFreeIteratorIntCustom it = set.poolAllocFreeIterator()) {
+		try (ZeroAllocEntryIteratorInt2Object<String> it = map.poolZeroAllocIterator()) {
 			while (it.hasNext()) {
-				sum += it.nextInt();
+				final Int2ObjectMap.Entry<String> entry = it.next();
+				sum += entry.getIntKey();
+				sum += entry.getValue().length();
 			}
 		}
 		return sum;

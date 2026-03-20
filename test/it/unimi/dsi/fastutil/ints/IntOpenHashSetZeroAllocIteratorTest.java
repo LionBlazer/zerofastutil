@@ -14,7 +14,7 @@ import org.junit.Test;
 
 import com.sun.management.ThreadMXBean;
 
-public class IntOpenHashSetAllocFreeIteratorTest {
+public class IntOpenHashSetZeroAllocIteratorTest {
 
 	@Test
 	public void testSimpleUsageExample() {
@@ -23,7 +23,7 @@ public class IntOpenHashSetAllocFreeIteratorTest {
 		set.add(20);
 
 		int sum = 0;
-		try (AllocFreeIteratorInt it = set.poolAllocFreeIterator()) {
+		try (ZeroAllocIteratorInt it = set.poolZeroAllocIterator()) {
 			while (it.hasNext()) {
 				sum += it.nextInt();
 			}
@@ -36,7 +36,7 @@ public class IntOpenHashSetAllocFreeIteratorTest {
 		final IntOpenHashSet set = new IntOpenHashSet();
 		set.add(1);
 		set.add(2);
-		try (AllocFreeIteratorInt it = set.poolAllocFreeIterator()) {
+		try (ZeroAllocIteratorInt it = set.poolZeroAllocIterator()) {
 			set.add(3);
 			try {
 				it.hasNext();
@@ -63,7 +63,7 @@ public class IntOpenHashSetAllocFreeIteratorTest {
 		final Runnable worker0 = new Runnable() {
 			@Override
 			public void run() {
-				try (AllocFreeIteratorInt it = set.poolAllocFreeIterator()) {
+				try (ZeroAllocIteratorInt it = set.poolZeroAllocIterator()) {
 					opened.countDown();
 					go.await();
 					sums[0] = sum(it);
@@ -77,7 +77,7 @@ public class IntOpenHashSetAllocFreeIteratorTest {
 		final Runnable worker1 = new Runnable() {
 			@Override
 			public void run() {
-				try (AllocFreeIteratorInt it = set.poolAllocFreeIterator()) {
+				try (ZeroAllocIteratorInt it = set.poolZeroAllocIterator()) {
 					opened.countDown();
 					go.await();
 					sums[1] = sum(it);
@@ -89,8 +89,8 @@ public class IntOpenHashSetAllocFreeIteratorTest {
 			}
 		};
 
-		new Thread(worker0, "alloc-free-set-worker-0").start();
-		new Thread(worker1, "alloc-free-set-worker-1").start();
+		new Thread(worker0, "zero-alloc-set-worker-0").start();
+		new Thread(worker1, "zero-alloc-set-worker-1").start();
 
 		assertTrue("Workers did not open iterators in time", opened.await(5, TimeUnit.SECONDS));
 		go.countDown();
@@ -126,12 +126,12 @@ public class IntOpenHashSetAllocFreeIteratorTest {
 	}
 
 	private static long iterateAll(final IntOpenHashSet set) {
-		try (AllocFreeIteratorInt it = set.poolAllocFreeIterator()) {
+		try (ZeroAllocIteratorInt it = set.poolZeroAllocIterator()) {
 			return sum(it);
 		}
 	}
 
-	private static long sum(final AllocFreeIteratorInt it) {
+	private static long sum(final ZeroAllocIteratorInt it) {
 		long sum = 0;
 		while (it.hasNext()) {
 			sum += it.nextInt();

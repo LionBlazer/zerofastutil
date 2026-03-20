@@ -7,10 +7,10 @@ import java.lang.reflect.Method;
 
 import org.junit.Test;
 
-public class ListAllocFreeSortApiCoverageTest {
+public class ListZeroAllocSortApiCoverageTest {
 
 	@Test
-	public void testAllocFreeSortApiOnListInterfaces() throws Exception {
+	public void testZeroAllocSortApiOnListInterfaces() throws Exception {
 		assertListApi("it.unimi.dsi.fastutil.booleans.BooleanList", "it.unimi.dsi.fastutil.booleans.BooleanComparator", "it.unimi.dsi.fastutil.booleans.BooleanArrays$StableSortBuffer");
 		assertListApi("it.unimi.dsi.fastutil.bytes.ByteList", "it.unimi.dsi.fastutil.bytes.ByteComparator", "it.unimi.dsi.fastutil.bytes.ByteArrays$StableSortBuffer");
 		assertListApi("it.unimi.dsi.fastutil.chars.CharList", "it.unimi.dsi.fastutil.chars.CharComparator", "it.unimi.dsi.fastutil.chars.CharArrays$StableSortBuffer");
@@ -24,7 +24,7 @@ public class ListAllocFreeSortApiCoverageTest {
 	}
 
 	@Test
-	public void testAllocFreeSortApiOnArrayLists() throws Exception {
+	public void testZeroAllocSortApiOnArrayLists() throws Exception {
 		assertListApi("it.unimi.dsi.fastutil.booleans.BooleanArrayList", "it.unimi.dsi.fastutil.booleans.BooleanComparator", "it.unimi.dsi.fastutil.booleans.BooleanArrays$StableSortBuffer");
 		assertListApi("it.unimi.dsi.fastutil.bytes.ByteArrayList", "it.unimi.dsi.fastutil.bytes.ByteComparator", "it.unimi.dsi.fastutil.bytes.ByteArrays$StableSortBuffer");
 		assertListApi("it.unimi.dsi.fastutil.chars.CharArrayList", "it.unimi.dsi.fastutil.chars.CharComparator", "it.unimi.dsi.fastutil.chars.CharArrays$StableSortBuffer");

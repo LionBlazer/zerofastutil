@@ -15,7 +15,7 @@ import org.junit.Test;
 
 import com.sun.management.ThreadMXBean;
 
-public class Int2IntOpenHashMapAllocFreeIteratorTest {
+public class Int2IntOpenHashMapZeroAllocIteratorTest {
 
 	@Test
 	public void testSimpleUsageExample() {
@@ -24,7 +24,7 @@ public class Int2IntOpenHashMapAllocFreeIteratorTest {
 		map.put(2, 22);
 
 		int sum = 0;
-		try (AllocFreeEntryIteratorInt2Int it = map.poolAllocFreeIterator()) {
+		try (ZeroAllocEntryIteratorInt2Int it = map.poolZeroAllocIterator()) {
 			for (Int2IntMap.Entry entry : it) {
 				sum += entry.getIntKey();
 				sum += entry.getIntValue();
@@ -39,7 +39,7 @@ public class Int2IntOpenHashMapAllocFreeIteratorTest {
 		map.put(1, 11);
 		map.put(2, 22);
 
-		try (AllocFreeEntryIteratorInt2Int it = map.poolAllocFreeIterator()) {
+		try (ZeroAllocEntryIteratorInt2Int it = map.poolZeroAllocIterator()) {
 			final Int2IntMap.Entry first = it.next();
 			final Int2IntMap.Entry second = it.next();
 			assertSame(first, second);
@@ -51,7 +51,7 @@ public class Int2IntOpenHashMapAllocFreeIteratorTest {
 		final Int2IntOpenHashMap map = new Int2IntOpenHashMap();
 		map.put(1, 11);
 		map.put(2, 22);
-		try (AllocFreeEntryIteratorInt2Int it = map.poolAllocFreeIterator()) {
+		try (ZeroAllocEntryIteratorInt2Int it = map.poolZeroAllocIterator()) {
 			map.put(3, 33);
 			try {
 				it.hasNext();
@@ -78,7 +78,7 @@ public class Int2IntOpenHashMapAllocFreeIteratorTest {
 		final Runnable worker0 = new Runnable() {
 			@Override
 			public void run() {
-				try (AllocFreeEntryIteratorInt2Int it = map.poolAllocFreeIterator()) {
+				try (ZeroAllocEntryIteratorInt2Int it = map.poolZeroAllocIterator()) {
 					opened.countDown();
 					go.await();
 					sums[0] = sum(it);
@@ -92,7 +92,7 @@ public class Int2IntOpenHashMapAllocFreeIteratorTest {
 		final Runnable worker1 = new Runnable() {
 			@Override
 			public void run() {
-				try (AllocFreeEntryIteratorInt2Int it = map.poolAllocFreeIterator()) {
+				try (ZeroAllocEntryIteratorInt2Int it = map.poolZeroAllocIterator()) {
 					opened.countDown();
 					go.await();
 					sums[1] = sum(it);
@@ -104,8 +104,8 @@ public class Int2IntOpenHashMapAllocFreeIteratorTest {
 			}
 		};
 
-		new Thread(worker0, "alloc-free-map-worker-0").start();
-		new Thread(worker1, "alloc-free-map-worker-1").start();
+		new Thread(worker0, "zero-alloc-map-worker-0").start();
+		new Thread(worker1, "zero-alloc-map-worker-1").start();
 
 		assertTrue("Workers did not open iterators in time", opened.await(5, TimeUnit.SECONDS));
 		go.countDown();
@@ -141,12 +141,12 @@ public class Int2IntOpenHashMapAllocFreeIteratorTest {
 	}
 
 	private static long iterateAll(final Int2IntOpenHashMap map) {
-		try (AllocFreeEntryIteratorInt2Int it = map.poolAllocFreeIterator()) {
+		try (ZeroAllocEntryIteratorInt2Int it = map.poolZeroAllocIterator()) {
 			return sum(it);
 		}
 	}
 
-	private static long sum(final AllocFreeEntryIteratorInt2Int it) {
+	private static long sum(final ZeroAllocEntryIteratorInt2Int it) {
 		long sum = 0;
 		while (it.hasNext()) {
 			final Int2IntMap.Entry entry = it.next();

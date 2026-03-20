@@ -10,7 +10,7 @@ import org.junit.Test;
 
 import com.sun.management.ThreadMXBean;
 
-public class Object2IntOpenHashMapAllocFreeIteratorTest {
+public class Object2IntOpenHashMapZeroAllocIteratorTest {
 
 	@Test
 	public void testSimpleUsageExample() {
@@ -19,7 +19,7 @@ public class Object2IntOpenHashMapAllocFreeIteratorTest {
 		map.put("two", 2);
 
 		int seen = 0;
-		try (AllocFreeEntryIteratorObject2Int<String> it = map.poolAllocFreeIterator()) {
+		try (ZeroAllocEntryIteratorObject2Int<String> it = map.poolZeroAllocIterator()) {
 			for (Object2IntMap.Entry<String> entry : it) {
 				seen += entry.getKey().length();
 				seen += entry.getIntValue();
@@ -34,7 +34,7 @@ public class Object2IntOpenHashMapAllocFreeIteratorTest {
 		map.put("one", 1);
 		map.put("two", 2);
 
-		try (AllocFreeEntryIteratorObject2Int<String> it = map.poolAllocFreeIterator()) {
+		try (ZeroAllocEntryIteratorObject2Int<String> it = map.poolZeroAllocIterator()) {
 			final Object2IntMap.Entry<String> first = it.next();
 			final Object2IntMap.Entry<String> second = it.next();
 			assertSame(first, second);
@@ -68,7 +68,7 @@ public class Object2IntOpenHashMapAllocFreeIteratorTest {
 
 	private static long iterateAll(final Object2IntOpenHashMap<String> map) {
 		long sum = 0;
-		try (AllocFreeEntryIteratorObject2Int<String> it = map.poolAllocFreeIterator()) {
+		try (ZeroAllocEntryIteratorObject2Int<String> it = map.poolZeroAllocIterator()) {
 			while (it.hasNext()) {
 				final Object2IntMap.Entry<String> entry = it.next();
 				sum += entry.getKey().length();

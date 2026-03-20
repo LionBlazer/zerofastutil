@@ -1,4 +1,4 @@
-package it.unimi.dsi.fastutil.objects;
+package it.unimi.dsi.fastutil.ints;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
@@ -10,30 +10,44 @@ import org.junit.Test;
 
 import com.sun.management.ThreadMXBean;
 
-public class ObjectOpenHashSetAllocFreeIteratorTest {
+public class IntOpenCustomHashSetZeroAllocIteratorTest {
+
+	private static final IntHash.Strategy STRATEGY = new IntHash.Strategy() {
+		private static final long serialVersionUID = 1L;
+
+		@Override
+		public int hashCode(final int e) {
+			return e;
+		}
+
+		@Override
+		public boolean equals(final int a, final int b) {
+			return a == b;
+		}
+	};
 
 	@Test
 	public void testSimpleUsageExample() {
-		final ObjectOpenHashSet<String> set = new ObjectOpenHashSet<String>();
-		set.add("a");
-		set.add("bb");
+		final IntOpenCustomHashSet set = new IntOpenCustomHashSet(STRATEGY);
+		set.add(5);
+		set.add(7);
 
-		int totalLength = 0;
-		try (AllocFreeIterator<String> it = set.poolAllocFreeIterator()) {
-			for (String value : it) {
-				totalLength += value.length();
+		int sum = 0;
+		try (ZeroAllocIteratorIntCustom it = set.poolZeroAllocIterator()) {
+			while (it.hasNext()) {
+				sum += it.nextInt();
 			}
 		}
-		assertEquals(3, totalLength);
+		assertEquals(12, sum);
 	}
 
 	@Test
 	public void testStructuralModificationGuard() {
-		final ObjectOpenHashSet<String> set = new ObjectOpenHashSet<String>();
-		set.add("one");
-		set.add("two");
-		try (AllocFreeIterator<String> it = set.poolAllocFreeIterator()) {
-			set.add("three");
+		final IntOpenCustomHashSet set = new IntOpenCustomHashSet(STRATEGY);
+		set.add(1);
+		set.add(2);
+		try (ZeroAllocIteratorIntCustom it = set.poolZeroAllocIterator()) {
+			set.add(3);
 			try {
 				it.hasNext();
 				fail("Expected IllegalStateException");
@@ -48,9 +62,9 @@ public class ObjectOpenHashSetAllocFreeIteratorTest {
 		final ThreadMXBean threadMxBean = allocationThreadMxBean();
 		Assume.assumeTrue(threadMxBean != null);
 
-		final ObjectOpenHashSet<String> set = new ObjectOpenHashSet<String>(512);
+		final IntOpenCustomHashSet set = new IntOpenCustomHashSet(512, STRATEGY);
 		for (int i = 0; i < 512; i++) {
-			set.add(Integer.toString(i));
+			set.add(1000 + i);
 		}
 
 		long sink = 0;
@@ -68,11 +82,11 @@ public class ObjectOpenHashSetAllocFreeIteratorTest {
 		assertEquals(0L, sink & 1L);
 	}
 
-	private static long iterateAll(final ObjectOpenHashSet<String> set) {
+	private static long iterateAll(final IntOpenCustomHashSet set) {
 		long sum = 0;
-		try (AllocFreeIterator<String> it = set.poolAllocFreeIterator()) {
+		try (ZeroAllocIteratorIntCustom it = set.poolZeroAllocIterator()) {
 			while (it.hasNext()) {
-				sum += it.next().length();
+				sum += it.nextInt();
 			}
 		}
 		return sum;

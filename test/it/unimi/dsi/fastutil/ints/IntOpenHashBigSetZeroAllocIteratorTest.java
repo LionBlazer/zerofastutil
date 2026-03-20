@@ -1,7 +1,7 @@
 package it.unimi.dsi.fastutil.ints;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertSame;
+import static org.junit.Assert.fail;
 
 import java.lang.management.ManagementFactory;
 
@@ -10,35 +10,21 @@ import org.junit.Test;
 
 import com.sun.management.ThreadMXBean;
 
-public class Int2ObjectOpenHashMapAllocFreeIteratorTest {
+public class IntOpenHashBigSetZeroAllocIteratorTest {
 
 	@Test
 	public void testSimpleUsageExample() {
-		final Int2ObjectOpenHashMap<String> map = new Int2ObjectOpenHashMap<String>();
-		map.put(1, "one");
-		map.put(2, "two");
+		final IntOpenHashBigSet set = new IntOpenHashBigSet();
+		set.add(4);
+		set.add(8);
 
-		int seen = 0;
-		try (AllocFreeEntryIteratorInt2Object<String> it = map.poolAllocFreeIterator()) {
-			for (Int2ObjectMap.Entry<String> entry : it) {
-				seen += entry.getIntKey();
-				seen += entry.getValue().length();
+		int sum = 0;
+		try (ZeroAllocIteratorIntBig it = set.poolZeroAllocIterator()) {
+			while (it.hasNext()) {
+				sum += it.nextInt();
 			}
 		}
-		assertEquals(9, seen);
-	}
-
-	@Test
-	public void testEntryObjectIsReused() {
-		final Int2ObjectOpenHashMap<String> map = new Int2ObjectOpenHashMap<String>();
-		map.put(1, "one");
-		map.put(2, "two");
-
-		try (AllocFreeEntryIteratorInt2Object<String> it = map.poolAllocFreeIterator()) {
-			final Int2ObjectMap.Entry<String> first = it.next();
-			final Int2ObjectMap.Entry<String> second = it.next();
-			assertSame(first, second);
-		}
+		assertEquals(12, sum);
 	}
 
 	@Test
@@ -46,33 +32,31 @@ public class Int2ObjectOpenHashMapAllocFreeIteratorTest {
 		final ThreadMXBean threadMxBean = allocationThreadMxBean();
 		Assume.assumeTrue(threadMxBean != null);
 
-		final Int2ObjectOpenHashMap<String> map = new Int2ObjectOpenHashMap<String>(256);
-		for (int i = 0; i < 256; i++) {
-			map.put(i, Integer.toString(i));
+		final IntOpenHashBigSet set = new IntOpenHashBigSet(512);
+		for (int i = 0; i < 512; i++) {
+			set.add(1000 + i);
 		}
 
 		long sink = 0;
 		for (int i = 0; i < 20000; i++) {
-			sink += iterateAll(map);
+			sink += iterateAll(set);
 		}
 
 		final long threadId = Thread.currentThread().getId();
 		final long before = threadMxBean.getThreadAllocatedBytes(threadId);
 		for (int i = 0; i < 50000; i++) {
-			sink += iterateAll(map);
+			sink += iterateAll(set);
 		}
 		final long allocated = threadMxBean.getThreadAllocatedBytes(threadId) - before;
 		assertEquals("Expected zero allocations in hot iteration path, but got " + allocated + " bytes", 0L, allocated);
 		assertEquals(0L, sink & 1L);
 	}
 
-	private static long iterateAll(final Int2ObjectOpenHashMap<String> map) {
+	private static long iterateAll(final IntOpenHashBigSet set) {
 		long sum = 0;
-		try (AllocFreeEntryIteratorInt2Object<String> it = map.poolAllocFreeIterator()) {
+		try (ZeroAllocIteratorIntBig it = set.poolZeroAllocIterator()) {
 			while (it.hasNext()) {
-				final Int2ObjectMap.Entry<String> entry = it.next();
-				sum += entry.getIntKey();
-				sum += entry.getValue().length();
+				sum += it.nextInt();
 			}
 		}
 		return sum;

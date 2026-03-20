@@ -1,7 +1,6 @@
-package it.unimi.dsi.fastutil.ints;
+package it.unimi.dsi.fastutil.objects;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.fail;
 
 import java.lang.management.ManagementFactory;
@@ -11,30 +10,30 @@ import org.junit.Test;
 
 import com.sun.management.ThreadMXBean;
 
-public class IntLinkedOpenHashSetAllocFreeIteratorTest {
+public class ObjectOpenHashSetZeroAllocIteratorTest {
 
 	@Test
 	public void testSimpleUsageExample() {
-		final IntLinkedOpenHashSet set = new IntLinkedOpenHashSet();
-		set.add(3);
-		set.add(1);
-		set.add(2);
+		final ObjectOpenHashSet<String> set = new ObjectOpenHashSet<String>();
+		set.add("a");
+		set.add("bb");
 
-		try (AllocFreeIteratorIntLinked it = set.poolAllocFreeIterator()) {
-			assertEquals(3, it.nextInt());
-			assertEquals(1, it.nextInt());
-			assertEquals(2, it.nextInt());
-			assertFalse(it.hasNext());
+		int totalLength = 0;
+		try (ZeroAllocIterator<String> it = set.poolZeroAllocIterator()) {
+			for (String value : it) {
+				totalLength += value.length();
+			}
 		}
+		assertEquals(3, totalLength);
 	}
 
 	@Test
 	public void testStructuralModificationGuard() {
-		final IntLinkedOpenHashSet set = new IntLinkedOpenHashSet();
-		set.add(1);
-		set.add(2);
-		try (AllocFreeIteratorIntLinked it = set.poolAllocFreeIterator()) {
-			set.add(3);
+		final ObjectOpenHashSet<String> set = new ObjectOpenHashSet<String>();
+		set.add("one");
+		set.add("two");
+		try (ZeroAllocIterator<String> it = set.poolZeroAllocIterator()) {
+			set.add("three");
 			try {
 				it.hasNext();
 				fail("Expected IllegalStateException");
@@ -49,9 +48,9 @@ public class IntLinkedOpenHashSetAllocFreeIteratorTest {
 		final ThreadMXBean threadMxBean = allocationThreadMxBean();
 		Assume.assumeTrue(threadMxBean != null);
 
-		final IntLinkedOpenHashSet set = new IntLinkedOpenHashSet(512);
+		final ObjectOpenHashSet<String> set = new ObjectOpenHashSet<String>(512);
 		for (int i = 0; i < 512; i++) {
-			set.add(1000 + i);
+			set.add(Integer.toString(i));
 		}
 
 		long sink = 0;
@@ -69,11 +68,11 @@ public class IntLinkedOpenHashSetAllocFreeIteratorTest {
 		assertEquals(0L, sink & 1L);
 	}
 
-	private static long iterateAll(final IntLinkedOpenHashSet set) {
+	private static long iterateAll(final ObjectOpenHashSet<String> set) {
 		long sum = 0;
-		try (AllocFreeIteratorIntLinked it = set.poolAllocFreeIterator()) {
+		try (ZeroAllocIterator<String> it = set.poolZeroAllocIterator()) {
 			while (it.hasNext()) {
-				sum += it.nextInt();
+				sum += it.next().length();
 			}
 		}
 		return sum;

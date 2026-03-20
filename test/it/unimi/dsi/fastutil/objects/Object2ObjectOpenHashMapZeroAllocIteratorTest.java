@@ -12,7 +12,7 @@ import org.junit.Test;
 
 import com.sun.management.ThreadMXBean;
 
-public class Object2ObjectOpenHashMapAllocFreeIteratorTest {
+public class Object2ObjectOpenHashMapZeroAllocIteratorTest {
 
 	@Test
 	public void testSimpleUsageExample() {
@@ -21,7 +21,7 @@ public class Object2ObjectOpenHashMapAllocFreeIteratorTest {
 		map.put("b", "2");
 
 		int seen = 0;
-		try (AllocFreeEntryIterator<String, String> it = map.poolAllocFreeIterator()) {
+		try (ZeroAllocEntryIterator<String, String> it = map.poolZeroAllocIterator()) {
 			for (Object2ObjectMap.Entry<String, String> entry : it) {
 				assertNotNull(entry.getKey());
 				assertNotNull(entry.getValue());
@@ -37,7 +37,7 @@ public class Object2ObjectOpenHashMapAllocFreeIteratorTest {
 		map.put(Integer.valueOf(1), Integer.valueOf(11));
 		map.put(Integer.valueOf(2), Integer.valueOf(22));
 
-		try (AllocFreeEntryIterator<Integer, Integer> it = map.poolAllocFreeIterator()) {
+		try (ZeroAllocEntryIterator<Integer, Integer> it = map.poolZeroAllocIterator()) {
 			final Object2ObjectMap.Entry<Integer, Integer> first = it.next();
 			final Object2ObjectMap.Entry<Integer, Integer> second = it.next();
 			assertSame(first, second);
@@ -49,7 +49,7 @@ public class Object2ObjectOpenHashMapAllocFreeIteratorTest {
 		final Object2ObjectOpenHashMap<Integer, Integer> map = new Object2ObjectOpenHashMap<Integer, Integer>();
 		map.put(Integer.valueOf(1), Integer.valueOf(11));
 		map.put(Integer.valueOf(2), Integer.valueOf(22));
-		try (AllocFreeEntryIterator<Integer, Integer> it = map.poolAllocFreeIterator()) {
+		try (ZeroAllocEntryIterator<Integer, Integer> it = map.poolZeroAllocIterator()) {
 			map.put(Integer.valueOf(3), Integer.valueOf(33));
 			try {
 				it.hasNext();
@@ -87,7 +87,7 @@ public class Object2ObjectOpenHashMapAllocFreeIteratorTest {
 
 	private static long iterateAll(final Object2ObjectOpenHashMap<Integer, Integer> map) {
 		long sum = 0;
-		try (AllocFreeEntryIterator<Integer, Integer> it = map.poolAllocFreeIterator()) {
+		try (ZeroAllocEntryIterator<Integer, Integer> it = map.poolZeroAllocIterator()) {
 			while (it.hasNext()) {
 				final Object2ObjectMap.Entry<Integer, Integer> entry = it.next();
 				sum += entry.getKey().intValue();

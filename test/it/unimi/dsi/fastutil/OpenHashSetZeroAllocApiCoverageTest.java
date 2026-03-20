@@ -20,29 +20,29 @@ import it.unimi.dsi.fastutil.objects.ObjectOpenCustomHashSet;
 import it.unimi.dsi.fastutil.objects.ObjectOpenHashBigSet;
 import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet;
 
-public class OpenHashSetAllocFreeApiCoverageTest {
+public class OpenHashSetZeroAllocApiCoverageTest {
 
 	@Test
-	public void testAllocFreeApiOnGeneratedOpenHashSetFamilies() throws Exception {
-		assertAllocFreeApi(ObjectOpenHashSet.class);
-		assertAllocFreeApi(ObjectOpenCustomHashSet.class);
-		assertAllocFreeApi(ObjectLinkedOpenHashSet.class);
-		assertAllocFreeApi(ObjectLinkedOpenCustomHashSet.class);
-		assertAllocFreeApi(ObjectOpenHashBigSet.class);
+	public void testZeroAllocApiOnGeneratedOpenHashSetFamilies() throws Exception {
+		assertZeroAllocApi(ObjectOpenHashSet.class);
+		assertZeroAllocApi(ObjectOpenCustomHashSet.class);
+		assertZeroAllocApi(ObjectLinkedOpenHashSet.class);
+		assertZeroAllocApi(ObjectLinkedOpenCustomHashSet.class);
+		assertZeroAllocApi(ObjectOpenHashBigSet.class);
 
-		assertAllocFreeApi(IntOpenHashSet.class);
-		assertAllocFreeApi(IntOpenCustomHashSet.class);
-		assertAllocFreeApi(IntLinkedOpenHashSet.class);
-		assertAllocFreeApi(IntLinkedOpenCustomHashSet.class);
-		assertAllocFreeApi(IntOpenHashBigSet.class);
+		assertZeroAllocApi(IntOpenHashSet.class);
+		assertZeroAllocApi(IntOpenCustomHashSet.class);
+		assertZeroAllocApi(IntLinkedOpenHashSet.class);
+		assertZeroAllocApi(IntLinkedOpenCustomHashSet.class);
+		assertZeroAllocApi(IntOpenHashBigSet.class);
 	}
 
-	private static void assertAllocFreeApi(final Class<?> setClass) throws Exception {
-		final Method pool = setClass.getMethod("poolAllocFreeIterator");
+	private static void assertZeroAllocApi(final Class<?> setClass) throws Exception {
+		final Method pool = setClass.getMethod("poolZeroAllocIterator");
 		assertNotNull(pool);
 		final Class<?> iteratorType = pool.getReturnType();
 		assertTrue("Iterator type should be generated as top-level class", iteratorType.getEnclosingClass() == null);
-		assertTrue("Iterator name should start with AllocFreeIterator", iteratorType.getSimpleName().startsWith("AllocFreeIterator"));
+		assertTrue("Iterator name should start with ZeroAllocIterator", iteratorType.getSimpleName().startsWith("ZeroAllocIterator"));
 		assertFalse("Iterator name should stay concise and not contain 'Set'", iteratorType.getSimpleName().contains("Set"));
 		assertEquals(iteratorType, pool.getReturnType());
 	}

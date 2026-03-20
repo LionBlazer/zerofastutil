@@ -1,6 +1,7 @@
 package it.unimi.dsi.fastutil.ints;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.fail;
 
 import java.lang.management.ManagementFactory;
@@ -10,21 +11,37 @@ import org.junit.Test;
 
 import com.sun.management.ThreadMXBean;
 
-public class IntOpenHashBigSetAllocFreeIteratorTest {
+public class IntLinkedOpenHashSetZeroAllocIteratorTest {
 
 	@Test
 	public void testSimpleUsageExample() {
-		final IntOpenHashBigSet set = new IntOpenHashBigSet();
-		set.add(4);
-		set.add(8);
+		final IntLinkedOpenHashSet set = new IntLinkedOpenHashSet();
+		set.add(3);
+		set.add(1);
+		set.add(2);
 
-		int sum = 0;
-		try (AllocFreeIteratorIntBig it = set.poolAllocFreeIterator()) {
-			while (it.hasNext()) {
-				sum += it.nextInt();
+		try (ZeroAllocIteratorIntLinked it = set.poolZeroAllocIterator()) {
+			assertEquals(3, it.nextInt());
+			assertEquals(1, it.nextInt());
+			assertEquals(2, it.nextInt());
+			assertFalse(it.hasNext());
+		}
+	}
+
+	@Test
+	public void testStructuralModificationGuard() {
+		final IntLinkedOpenHashSet set = new IntLinkedOpenHashSet();
+		set.add(1);
+		set.add(2);
+		try (ZeroAllocIteratorIntLinked it = set.poolZeroAllocIterator()) {
+			set.add(3);
+			try {
+				it.hasNext();
+				fail("Expected IllegalStateException");
+			} catch (final IllegalStateException expected) {
+				// Expected.
 			}
 		}
-		assertEquals(12, sum);
 	}
 
 	@Test
@@ -32,7 +49,7 @@ public class IntOpenHashBigSetAllocFreeIteratorTest {
 		final ThreadMXBean threadMxBean = allocationThreadMxBean();
 		Assume.assumeTrue(threadMxBean != null);
 
-		final IntOpenHashBigSet set = new IntOpenHashBigSet(512);
+		final IntLinkedOpenHashSet set = new IntLinkedOpenHashSet(512);
 		for (int i = 0; i < 512; i++) {
 			set.add(1000 + i);
 		}
@@ -52,9 +69,9 @@ public class IntOpenHashBigSetAllocFreeIteratorTest {
 		assertEquals(0L, sink & 1L);
 	}
 
-	private static long iterateAll(final IntOpenHashBigSet set) {
+	private static long iterateAll(final IntLinkedOpenHashSet set) {
 		long sum = 0;
-		try (AllocFreeIteratorIntBig it = set.poolAllocFreeIterator()) {
+		try (ZeroAllocIteratorIntLinked it = set.poolZeroAllocIterator()) {
 			while (it.hasNext()) {
 				sum += it.nextInt();
 			}
