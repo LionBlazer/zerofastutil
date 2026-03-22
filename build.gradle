@@ -81,6 +81,22 @@ def buildElementZeroAllocIteratorType = { String typeCap, String javaTypeUse ->
 	isReferenceTypeCap.call(typeCap) ? "it.unimi.dsi.fastutil.ZeroAllocIterator<${javaTypeUse}>" : buildPrimitiveZeroAllocIteratorType.call(typeCap)
 }
 
+def buildTypePackageName = { String typeCap ->
+	if (isReferenceTypeCap.call(typeCap)) {
+		return "it.unimi.dsi.fastutil.objects"
+	}
+	"it.unimi.dsi.fastutil.${typeCap.toLowerCase()}s"
+}
+
+def buildQualifiedTypeUse = { String packageName, String simpleName, String typeArgs, String currentPackage ->
+	final String baseName = packageName == currentPackage ? simpleName : packageName + "." + simpleName
+	baseName + typeArgs
+}
+
+def buildQualifiedClassRef = { String packageName, String simpleName, String currentPackage ->
+	packageName == currentPackage ? simpleName : packageName + "." + simpleName
+}
+
 def buildOpenHashMapBaseName = { String ownerClass ->
 	if (ownerClass.endsWith("LinkedOpenCustomHashMap")) {
 		return ownerClass.substring(0, ownerClass.length() - "LinkedOpenCustomHashMap".length())
@@ -193,6 +209,8 @@ def extractTypeArgsFromTypeDecl = { String typeDecl ->
 
 def shortenQualifiedTypeReferences = { String source, String currentPackage ->
 	final String originalSource = source
+	def topLevelTypeMatcher = (source =~ /(?m)^\s*public\s+(?:final\s+|abstract\s+)?(?:class|interface|enum)\s+([A-Za-z0-9_]+)/)
+	final String topLevelTypeName = topLevelTypeMatcher.find() ? topLevelTypeMatcher.group(1) : null
 	final Map<String, String> replacements = [
 		"it.unimi.dsi.fastutil.BigArrays"              : "BigArrays",
 		"it.unimi.dsi.fastutil.ZeroAllocIterable"      : "ZeroAllocIterable",
@@ -214,13 +232,19 @@ def shortenQualifiedTypeReferences = { String source, String currentPackage ->
 		}
 	}
 
-	final List<String> normalizedLines = source.readLines().collect { String line ->
-		if (line ==~ /^\s*import\s+[A-Za-z0-9_.]+;\s*$/) {
-			return line
+	final List<String> normalizedLines = source.readLines().findResults { String line ->
+		def importMatcher = (line =~ /^\s*import\s+([A-Za-z0-9_.]+);\s*$/)
+		if (importMatcher.find()) {
+			final String importedType = importMatcher.group(1)
+			final String importedSimpleName = importedType.substring(importedType.lastIndexOf('.') + 1)
+			return importedSimpleName == topLevelTypeName ? null : line
 		}
 
 		String normalizedLine = line
 		replacements.each { String fqn, String simpleName ->
+			if (simpleName == topLevelTypeName) {
+				return
+			}
 			if (normalizedLine.contains(fqn)) {
 				normalizedLine = normalizedLine.replace(fqn, simpleName)
 			}
@@ -230,6 +254,9 @@ def shortenQualifiedTypeReferences = { String source, String currentPackage ->
 	source = normalizedLines.join("\n")
 
 	replacements.each { String fqn, String simpleName ->
+		if (simpleName == topLevelTypeName) {
+			return
+		}
 		if (!originalSource.contains(fqn)) {
 			return
 		}
@@ -290,8 +317,18 @@ def parseIteratorMethodFromInnerClassBody = { String classBody, File javaFile, S
 	]
 }
 
+def normalizeZeroAllocIteratorInterface = { String iteratorInterface ->
+	iteratorInterface
+			.replace("BidirectionalIterator", "Iterator")
+			.replace("ListIterator", "Iterator")
+}
+
 def insertAfterOpeningBrace = { String source, int openingBraceIndex, String insertion ->
 	source.substring(0, openingBraceIndex + 1) + "\n" + insertion + source.substring(openingBraceIndex + 1)
+}
+
+def buildPackageDirectory = { File rootDir, String packageName ->
+	new File(rootDir, packageName.replace('.', '/'))
 }
 
 def buildZeroAllocIteratorClassName = { String ownerClass ->
@@ -350,10 +387,14 @@ def parseOpenHashMapMetadata = { File javaFile ->
 	final String typeDecl = classDeclMatcher.group(1) ?: ""
 
 	final String typeArgs = extractTypeArgsFromTypeDecl.call(typeDecl)
+	final String keyProjectionPackageName = packageName
+	final String valueProjectionPackageName = isReferenceTypeCap.call(valueTypeCap) ? packageName : buildTypePackageName.call(valueTypeCap)
 	final String ownerTypeUse = ownerClass + typeArgs
 	final String iteratorTypeUse = iteratorClass + typeArgs
-	final String keyProjectionIteratorTypeUse = keyProjectionIteratorClass + typeArgs
-	final String valueProjectionIteratorTypeUse = valueProjectionIteratorClass + typeArgs
+	final String keyProjectionIteratorTypeUse = buildQualifiedTypeUse.call(keyProjectionPackageName, keyProjectionIteratorClass, typeArgs, packageName)
+	final String valueProjectionIteratorTypeUse = buildQualifiedTypeUse.call(valueProjectionPackageName, valueProjectionIteratorClass, typeArgs, packageName)
+	final String keyProjectionIteratorRef = buildQualifiedClassRef.call(keyProjectionPackageName, keyProjectionIteratorClass, packageName)
+	final String valueProjectionIteratorRef = buildQualifiedClassRef.call(valueProjectionPackageName, valueProjectionIteratorClass, packageName)
 
 	def mapEntryMatcher = (source =~ /final class MapEntry implements\s+([^\{]+)\{/)
 	if (!mapEntryMatcher.find()) {
@@ -377,7 +418,7 @@ def parseOpenHashMapMetadata = { File javaFile ->
 	if (!keyIteratorInterfaceMatcher.find()) {
 		throw new GradleException("Cannot find KeyIterator interface declaration in ${javaFile}")
 	}
-	final String keyIteratorInterface = keyIteratorInterfaceMatcher.group(1).trim()
+	final String keyIteratorInterface = normalizeZeroAllocIteratorInterface.call(keyIteratorInterfaceMatcher.group(1).trim())
 	final Map keyIteratorMethod = parseIteratorMethodFromInnerClassBody.call(keyIteratorInner.body, javaFile, "KeyIterator")
 	final String keyZeroAllocIteratorType = buildElementZeroAllocIteratorType.call(keyTypeCap, keyIteratorMethod.returnType)
 	final boolean keyIteratorImplementsIterable = isReferenceTypeCap.call(keyTypeCap)
@@ -387,7 +428,7 @@ def parseOpenHashMapMetadata = { File javaFile ->
 	if (!valueIteratorInterfaceMatcher.find()) {
 		throw new GradleException("Cannot find ValueIterator interface declaration in ${javaFile}")
 	}
-	final String valueIteratorInterface = valueIteratorInterfaceMatcher.group(1).trim()
+	final String valueIteratorInterface = normalizeZeroAllocIteratorInterface.call(valueIteratorInterfaceMatcher.group(1).trim())
 	final Map valueIteratorMethod = parseIteratorMethodFromInnerClassBody.call(valueIteratorInner.body, javaFile, "ValueIterator")
 	final String valueZeroAllocIteratorType = buildElementZeroAllocIteratorType.call(valueTypeCap, valueIteratorMethod.returnType)
 	final boolean valueIteratorImplementsIterable = isReferenceTypeCap.call(valueTypeCap)
@@ -427,8 +468,12 @@ def parseOpenHashMapMetadata = { File javaFile ->
 		valueAccessor: valueAccessor,
 		keyProjectionIteratorClass: keyProjectionIteratorClass,
 		valueProjectionIteratorClass: valueProjectionIteratorClass,
+		keyProjectionPackageName: keyProjectionPackageName,
+		valueProjectionPackageName: valueProjectionPackageName,
 		keyProjectionIteratorTypeUse: keyProjectionIteratorTypeUse,
 		valueProjectionIteratorTypeUse: valueProjectionIteratorTypeUse,
+		keyProjectionIteratorRef: keyProjectionIteratorRef,
+		valueProjectionIteratorRef: valueProjectionIteratorRef,
 		keyIteratorInterface: keyIteratorInterface,
 		valueIteratorInterface: valueIteratorInterface,
 		keyIteratorReturnType: keyIteratorMethod.returnType,
@@ -636,13 +681,12 @@ ${entryView}
 
 	return shortenQualifiedTypeReferences.call("""package ${meta.packageName};
 
-import it.unimi.dsi.fastutil.ZeroAllocIterator;
 import java.util.ArrayDeque;
 import java.util.NoSuchElementException;
 import java.util.Map;
 
 /** Reusable, zero-alloc entry iterator for {@link ${meta.ownerClass}}. */
-public final class ${meta.iteratorClass}${meta.typeDecl} implements it.unimi.dsi.fastutil.objects.ObjectIterator<${meta.entryType}>, ZeroAllocIterator<${meta.entryType}> {
+public final class ${meta.iteratorClass}${meta.typeDecl} implements it.unimi.dsi.fastutil.objects.ObjectIterator<${meta.entryType}>, it.unimi.dsi.fastutil.ZeroAllocIterator<${meta.entryType}> {
 ${core}
 }
 """, meta.packageName)
@@ -686,10 +730,13 @@ def buildZeroAllocMapProjectionIteratorClassSource = { Map meta, String componen
 	final String accessor = keyComponent ? meta.keyAccessor : meta.valueAccessor
 	final String staticTypeParams = meta.typeDecl ? meta.typeDecl + " " : ""
 	final String iterableIteratorType = implementsIterable ? "it.unimi.dsi.fastutil.objects.ObjectIterator<${nextReturnType}>" : iteratorInterface
+	final String projectionPackageName = keyComponent ? meta.keyProjectionPackageName : meta.valueProjectionPackageName
+	final boolean foreignPackage = projectionPackageName != meta.packageName
 
-	return shortenQualifiedTypeReferences.call("""package ${meta.packageName};
+return shortenQualifiedTypeReferences.call("""package ${projectionPackageName};
 
 import java.util.ArrayDeque;
+${foreignPackage ? "import ${meta.packageName}.${meta.ownerClass};\nimport ${meta.packageName}.${meta.iteratorClass};\n" : ""}
 
 /** Reusable, zero-alloc ${component} iterator for {@link ${meta.ownerClass}} views. */
 public final class ${iteratorClass}${meta.typeDecl} implements ${iterableIteratorType}, ${zeroAllocIteratorType} {
@@ -699,7 +746,7 @@ public final class ${iteratorClass}${meta.typeDecl} implements ${iterableIterato
 	private boolean inUse;
 
 	@SuppressWarnings("unchecked")
-	static ${staticTypeParams}${iteratorTypeUse} acquire(final ${meta.ownerTypeUse} owner) {
+	public static ${staticTypeParams}${iteratorTypeUse} acquire(final ${meta.ownerTypeUse} owner) {
 		final ArrayDeque<${iteratorClass}> pool = POOL.get();
 		${iteratorClass} iterator = pool.pollFirst();
 		if (iterator == null) iterator = new ${iteratorClass}${meta.typeArgs}();
@@ -709,7 +756,7 @@ public final class ${iteratorClass}${meta.typeDecl} implements ${iterableIterato
 
 	void open(final ${meta.ownerTypeUse} owner) {
 		if (inUse) throw new IllegalStateException("Iterator already in use.");
-		entryIterator = ${meta.iteratorClass}.acquire(owner);
+		entryIterator = ${foreignPackage ? "owner.poolZeroAllocIterator()" : "${meta.iteratorClass}.acquire(owner)"};
 		inUse = true;
 	}
 
@@ -752,7 +799,7 @@ ${implementsIterable ? """
 		}
 	}
 }
-""", meta.packageName)
+""", projectionPackageName)
 }
 
 def injectZeroAllocMapViewApi = { File javaFile, Map meta ->
@@ -771,14 +818,14 @@ def injectZeroAllocMapViewApi = { File javaFile, Map meta ->
 	final String keySetPoolMethod = """
 		@Override
 		public ${meta.keyProjectionIteratorTypeUse} poolZeroAllocIterator() {
-			return ${meta.keyProjectionIteratorClass}.acquire(${meta.ownerClass}.this);
+			return ${meta.keyProjectionIteratorRef}.acquire(${meta.ownerClass}.this);
 		}
 """
 
 	final String valuesPoolMethod = """
 			@Override
 			public ${meta.valueProjectionIteratorTypeUse} poolZeroAllocIterator() {
-				return ${meta.valueProjectionIteratorClass}.acquire(${meta.ownerClass}.this);
+				return ${meta.valueProjectionIteratorRef}.acquire(${meta.ownerClass}.this);
 			}
 """
 
@@ -1359,6 +1406,10 @@ def patchGeneratedMapInterfaceZeroAllocApi = { File javaFile ->
 	}
 """
 
+	entrySetMatcher = (source =~ /(?m)^\s*ObjectSet<([^;\n]+?)>\s+([A-Za-z0-9]+EntrySet)\(\);\s*$/)
+	if (!entrySetMatcher.find()) {
+		throw new GradleException("Cannot re-find entry set declaration in ${javaFile}")
+	}
 	source = source.substring(0, entrySetMatcher.end()) + zeroAllocMethods + source.substring(entrySetMatcher.end())
 	source = shortenQualifiedTypeReferences.call(source, packageName)
 	javaFile.write(source, "UTF-8")
@@ -1778,9 +1829,15 @@ tasks.register("prepareFallbackSources", Sync) {
 				final File iteratorFile = new File(javaFile.parentFile, "${meta.iteratorClass}.java")
 				iteratorFile.write(buildZeroAllocIteratorClassSource.call(meta), "UTF-8")
 				generatedMapIterators++
-				final File keyIteratorFile = new File(javaFile.parentFile, "${meta.keyProjectionIteratorClass}.java")
+				final File keyIteratorFile = new File(buildPackageDirectory.call(destinationDir, meta.keyProjectionPackageName), "${meta.keyProjectionIteratorClass}.java")
+				keyIteratorFile.parentFile.mkdirs()
 				keyIteratorFile.write(buildZeroAllocMapProjectionIteratorClassSource.call(meta, "key"), "UTF-8")
-				final File valueIteratorFile = new File(javaFile.parentFile, "${meta.valueProjectionIteratorClass}.java")
+				final File valueIteratorFile = new File(buildPackageDirectory.call(destinationDir, meta.valueProjectionPackageName), "${meta.valueProjectionIteratorClass}.java")
+				final File legacyValueIteratorFile = new File(javaFile.parentFile, "${meta.valueProjectionIteratorClass}.java")
+				if (legacyValueIteratorFile.absolutePath != valueIteratorFile.absolutePath && legacyValueIteratorFile.exists()) {
+					legacyValueIteratorFile.delete()
+				}
+				valueIteratorFile.parentFile.mkdirs()
 				valueIteratorFile.write(buildZeroAllocMapProjectionIteratorClassSource.call(meta, "value"), "UTF-8")
 				generatedMapProjectionIterators += 2
 			}
