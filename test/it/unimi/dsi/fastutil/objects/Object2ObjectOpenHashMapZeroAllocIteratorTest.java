@@ -12,6 +12,9 @@ import org.junit.Test;
 
 import com.sun.management.ThreadMXBean;
 
+import it.unimi.dsi.fastutil.ZeroAllocIterable;
+import it.unimi.dsi.fastutil.ZeroAllocIterator;
+
 public class Object2ObjectOpenHashMapZeroAllocIteratorTest {
 
 	@Test
@@ -29,6 +32,15 @@ public class Object2ObjectOpenHashMapZeroAllocIteratorTest {
 			}
 		}
 		assertEquals(2, seen);
+	}
+
+	@Test
+	public void testMapImplementsZeroAllocIterableOfEntries() {
+		final Object2ObjectMap<String, String> map = new Object2ObjectOpenHashMap<String, String>();
+		map.put("a", "11");
+		map.put("bbb", "2");
+
+		assertEquals(7, sumEntries(map));
 	}
 
 	@Test
@@ -92,6 +104,18 @@ public class Object2ObjectOpenHashMapZeroAllocIteratorTest {
 				final Object2ObjectMap.Entry<Integer, Integer> entry = it.next();
 				sum += entry.getKey().intValue();
 				sum += entry.getValue().intValue();
+			}
+		}
+		return sum;
+	}
+
+	private static int sumEntries(final ZeroAllocIterable<Object2ObjectMap.Entry<String, String>> iterable) {
+		int sum = 0;
+		try (ZeroAllocIterator<Object2ObjectMap.Entry<String, String>> it = iterable.poolZeroAllocIterator()) {
+			while (it.hasNext()) {
+				final Object2ObjectMap.Entry<String, String> entry = it.next();
+				sum += entry.getKey().length();
+				sum += entry.getValue().length();
 			}
 		}
 		return sum;

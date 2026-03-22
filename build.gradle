@@ -58,34 +58,84 @@ def primitiveToBoxedType = [
 	"double": "Double"
 ]
 
-def buildZeroAllocIteratorClassName = { String ownerClass ->
-	final String baseName
+def primitiveToTypeCap = [
+	"boolean": "Boolean",
+	"byte": "Byte",
+	"short": "Short",
+	"char": "Char",
+	"int": "Int",
+	"long": "Long",
+	"float": "Float",
+	"double": "Double"
+]
+
+def isReferenceTypeCap = { String typeCap ->
+	typeCap in ["Object", "Reference"]
+}
+
+def buildPrimitiveZeroAllocIteratorType = { String typeCap ->
+	"it.unimi.dsi.fastutil.${typeCap.toLowerCase()}s.${typeCap}ZeroAllocIterator"
+}
+
+def buildElementZeroAllocIteratorType = { String typeCap, String javaTypeUse ->
+	isReferenceTypeCap.call(typeCap) ? "it.unimi.dsi.fastutil.ZeroAllocIterator<${javaTypeUse}>" : buildPrimitiveZeroAllocIteratorType.call(typeCap)
+}
+
+def buildOpenHashMapBaseName = { String ownerClass ->
+	if (ownerClass.endsWith("LinkedOpenCustomHashMap")) {
+		return ownerClass.substring(0, ownerClass.length() - "LinkedOpenCustomHashMap".length())
+	}
+	if (ownerClass.endsWith("LinkedOpenHashMap")) {
+		return ownerClass.substring(0, ownerClass.length() - "LinkedOpenHashMap".length())
+	}
+	if (ownerClass.endsWith("OpenCustomHashMap")) {
+		return ownerClass.substring(0, ownerClass.length() - "OpenCustomHashMap".length())
+	}
+	if (ownerClass.endsWith("OpenHashMap")) {
+		return ownerClass.substring(0, ownerClass.length() - "OpenHashMap".length())
+	}
+	throw new GradleException("Unsupported OpenHashMap owner class: ${ownerClass}")
+}
+
+def parseMapTypeCaps = { String ownerClass ->
+	final String baseName = buildOpenHashMapBaseName.call(ownerClass)
+	final int separator = baseName.indexOf('2')
+	if (separator < 0) {
+		throw new GradleException("Cannot derive key/value type names from ${ownerClass}")
+	}
+	[
+		keyTypeCap: baseName.substring(0, separator),
+		valueTypeCap: baseName.substring(separator + 1)
+	]
+}
+
+def buildMapComponentAccessor = { String typeCap, String component ->
+	if (component == "key") {
+		return isReferenceTypeCap.call(typeCap) ? "getKey()" : "get${typeCap}Key()"
+	}
+	if (component == "value") {
+		return isReferenceTypeCap.call(typeCap) ? "getValue()" : "get${typeCap}Value()"
+	}
+	throw new GradleException("Unsupported map component: ${component}")
+}
+
+def buildZeroAllocMapProjectionIteratorClassName = { String ownerClass, String component ->
+	final String baseName = buildOpenHashMapBaseName.call(ownerClass)
 	final String variantSuffix
 	if (ownerClass.endsWith("LinkedOpenCustomHashMap")) {
-		baseName = ownerClass.substring(0, ownerClass.length() - "LinkedOpenCustomHashMap".length())
 		variantSuffix = "LinkedCustom"
 	} else if (ownerClass.endsWith("LinkedOpenHashMap")) {
-		baseName = ownerClass.substring(0, ownerClass.length() - "LinkedOpenHashMap".length())
 		variantSuffix = "Linked"
 	} else if (ownerClass.endsWith("OpenCustomHashMap")) {
-		baseName = ownerClass.substring(0, ownerClass.length() - "OpenCustomHashMap".length())
 		variantSuffix = "Custom"
 	} else if (ownerClass.endsWith("OpenHashMap")) {
-		baseName = ownerClass.substring(0, ownerClass.length() - "OpenHashMap".length())
 		variantSuffix = ""
 	} else {
 		throw new GradleException("Unsupported OpenHashMap owner class: ${ownerClass}")
 	}
-
-	if (baseName == "Object2Object" && variantSuffix.isEmpty()) {
-		return "ZeroAllocEntryIterator"
-	}
-	return "ZeroAllocEntryIterator${baseName}${variantSuffix}"
-}
-
-def isGeneratedOpenHashMapFile = { File javaFile ->
-	def name = javaFile.name
-	name.contains("2") && openHashMapDriverSuffixes.any { name.endsWith(it) }
+	final String suffix = (baseName == "Object2Object" && variantSuffix.isEmpty()) ? "" : baseName + variantSuffix
+	final String prefix = component == "key" ? "ZeroAllocKeyIterator" : "ZeroAllocValueIterator"
+	return suffix ? prefix + suffix : prefix
 }
 
 def extractBracedBody = { String source, int openingBraceIndex ->
@@ -126,11 +176,166 @@ def extractFirstTopLevelSegment = { String source, String separator ->
 	return source.trim()
 }
 
+def extractTypeArgsFromTypeDecl = { String typeDecl ->
+	if (!typeDecl) {
+		return ""
+	}
+	def names = typeDecl.substring(1, typeDecl.length() - 1)
+			.split(",")
+			.collect { part ->
+				part.trim()
+						.replaceAll(/\s+extends\s+.*$/, "")
+						.replaceAll(/\s+super\s+.*$/, "")
+						.trim()
+			}
+	return "<" + names.join(", ") + ">"
+}
+
+def shortenQualifiedTypeReferences = { String source, String currentPackage ->
+	final String originalSource = source
+	final Map<String, String> replacements = [
+		"it.unimi.dsi.fastutil.BigArrays"              : "BigArrays",
+		"it.unimi.dsi.fastutil.ZeroAllocIterable"      : "ZeroAllocIterable",
+		"it.unimi.dsi.fastutil.ZeroAllocIterator"      : "ZeroAllocIterator",
+		"it.unimi.dsi.fastutil.objects.ObjectIterator" : "ObjectIterator",
+		"java.util.ArrayDeque"                         : "ArrayDeque",
+		"java.util.Iterator"                           : "Iterator",
+		"java.util.Map"                                : "Map",
+		"java.util.NoSuchElementException"             : "NoSuchElementException",
+		"java.util.Objects"                            : "Objects"
+	]
+	final Set<String> importsToAdd = new LinkedHashSet<String>()
+	final Set<String> existingImports = new LinkedHashSet<String>()
+
+	source.eachLine { String line ->
+		def importMatcher = (line =~ /^\s*import\s+([A-Za-z0-9_.]+);\s*$/)
+		if (importMatcher.find()) {
+			existingImports.add(importMatcher.group(1))
+		}
+	}
+
+	final List<String> normalizedLines = source.readLines().collect { String line ->
+		if (line ==~ /^\s*import\s+[A-Za-z0-9_.]+;\s*$/) {
+			return line
+		}
+
+		String normalizedLine = line
+		replacements.each { String fqn, String simpleName ->
+			if (normalizedLine.contains(fqn)) {
+				normalizedLine = normalizedLine.replace(fqn, simpleName)
+			}
+		}
+		normalizedLine
+	}
+	source = normalizedLines.join("\n")
+
+	replacements.each { String fqn, String simpleName ->
+		if (!originalSource.contains(fqn)) {
+			return
+		}
+
+		final int lastDot = fqn.lastIndexOf('.')
+		if (lastDot < 0) {
+			return
+		}
+		final String importPackage = fqn.substring(0, lastDot)
+		if (importPackage == "java.lang" || importPackage == currentPackage) {
+			return
+		}
+		if (!existingImports.contains(fqn)) {
+			importsToAdd.add(fqn)
+		}
+	}
+
+	if (importsToAdd.isEmpty()) {
+		return source
+	}
+
+	def packageMatcher = (source =~ /(?m)^package\s+[a-zA-Z0-9_.]+;\s*/)
+	if (!packageMatcher.find()) {
+		throw new GradleException("Cannot find package declaration while shortening imports for ${currentPackage}")
+	}
+
+	final String importBlock = importsToAdd.toList().sort().collect { "import ${it};" }.join("\n")
+	source.substring(0, packageMatcher.end()) + "\n" + importBlock + "\n" + source.substring(packageMatcher.end())
+}
+
+def extractInnerClassBody = { String source, String className, File javaFile ->
+	def matcher = (source =~ ("private\\s+final\\s+class\\s+" + java.util.regex.Pattern.quote(className) + "\\b[^\\{]*\\{"))
+	if (!matcher.find()) {
+		throw new GradleException("Cannot find inner class ${className} in ${javaFile}")
+	}
+	final int openingBrace = source.indexOf('{', matcher.start())
+	if (openingBrace < 0) {
+		throw new GradleException("Cannot find opening brace for inner class ${className} in ${javaFile}")
+	}
+	final Map body = extractBracedBody.call(source, openingBrace)
+	[
+		start: matcher.start(),
+		openingBrace: openingBrace,
+		body: body.body,
+		closingIndex: body.closingIndex,
+		declaration: matcher.group(0)
+	]
+}
+
+def parseIteratorMethodFromInnerClassBody = { String classBody, File javaFile, String className ->
+	def matcher = (classBody =~ /@Override\s+public\s+([A-Za-z0-9_<>, ?\[\]]+)\s+(next[A-Za-z0-9_]*)\(\)\s*\{/)
+	if (!matcher.find()) {
+		throw new GradleException("Cannot find next* method in ${className} for ${javaFile}")
+	}
+	[
+		returnType: matcher.group(1).trim(),
+		methodName: matcher.group(2).trim()
+	]
+}
+
+def insertAfterOpeningBrace = { String source, int openingBraceIndex, String insertion ->
+	source.substring(0, openingBraceIndex + 1) + "\n" + insertion + source.substring(openingBraceIndex + 1)
+}
+
+def buildZeroAllocIteratorClassName = { String ownerClass ->
+	final String baseName
+	final String variantSuffix
+	if (ownerClass.endsWith("LinkedOpenCustomHashMap")) {
+		baseName = ownerClass.substring(0, ownerClass.length() - "LinkedOpenCustomHashMap".length())
+		variantSuffix = "LinkedCustom"
+	} else if (ownerClass.endsWith("LinkedOpenHashMap")) {
+		baseName = ownerClass.substring(0, ownerClass.length() - "LinkedOpenHashMap".length())
+		variantSuffix = "Linked"
+	} else if (ownerClass.endsWith("OpenCustomHashMap")) {
+		baseName = ownerClass.substring(0, ownerClass.length() - "OpenCustomHashMap".length())
+		variantSuffix = "Custom"
+	} else if (ownerClass.endsWith("OpenHashMap")) {
+		baseName = ownerClass.substring(0, ownerClass.length() - "OpenHashMap".length())
+		variantSuffix = ""
+	} else {
+		throw new GradleException("Unsupported OpenHashMap owner class: ${ownerClass}")
+	}
+
+	if (baseName == "Object2Object" && variantSuffix.isEmpty()) {
+		return "ZeroAllocEntryIterator"
+	}
+	return "ZeroAllocEntryIterator${baseName}${variantSuffix}"
+}
+
+def isGeneratedOpenHashMapFile = { File javaFile ->
+	def name = javaFile.name
+	name.contains("2") && openHashMapDriverSuffixes.any { name.endsWith(it) }
+}
+
 def parseOpenHashMapMetadata = { File javaFile ->
 	String source = javaFile.getText("UTF-8")
 	final String ownerClass = javaFile.name.substring(0, javaFile.name.length() - ".java".length())
 	final boolean linked = javaFile.name.contains("LinkedOpen")
-	final String iteratorClass = buildZeroAllocIteratorClassName(ownerClass)
+	final String iteratorClass = buildZeroAllocIteratorClassName.call(ownerClass)
+	final Map typeCaps = parseMapTypeCaps.call(ownerClass)
+	final String keyTypeCap = typeCaps.keyTypeCap
+	final String valueTypeCap = typeCaps.valueTypeCap
+	final String keyAccessor = buildMapComponentAccessor.call(keyTypeCap, "key")
+	final String valueAccessor = buildMapComponentAccessor.call(valueTypeCap, "value")
+	final String keyProjectionIteratorClass = buildZeroAllocMapProjectionIteratorClassName.call(ownerClass, "key")
+	final String valueProjectionIteratorClass = buildZeroAllocMapProjectionIteratorClassName.call(ownerClass, "value")
 
 	def packageMatcher = (source =~ /(?m)^package\s+([a-zA-Z0-9_.]+);/)
 	if (!packageMatcher.find()) {
@@ -144,37 +349,48 @@ def parseOpenHashMapMetadata = { File javaFile ->
 	}
 	final String typeDecl = classDeclMatcher.group(1) ?: ""
 
-	String typeArgs = ""
-	if (typeDecl) {
-		def names = typeDecl.substring(1, typeDecl.length() - 1)
-				.split(",")
-				.collect { part ->
-					part.trim()
-							.replaceAll(/\s+extends\s+.*$/, "")
-							.replaceAll(/\s+super\s+.*$/, "")
-							.trim()
-				}
-		typeArgs = "<" + names.join(", ") + ">"
-	}
+	final String typeArgs = extractTypeArgsFromTypeDecl.call(typeDecl)
 	final String ownerTypeUse = ownerClass + typeArgs
 	final String iteratorTypeUse = iteratorClass + typeArgs
+	final String keyProjectionIteratorTypeUse = keyProjectionIteratorClass + typeArgs
+	final String valueProjectionIteratorTypeUse = valueProjectionIteratorClass + typeArgs
 
 	def mapEntryMatcher = (source =~ /final class MapEntry implements\s+([^\{]+)\{/)
 	if (!mapEntryMatcher.find()) {
 		throw new GradleException("Cannot find MapEntry declaration in ${javaFile}")
 	}
 	final String mapEntryInterfaces = mapEntryMatcher.group(1).trim()
-	final String entryType = extractFirstTopLevelSegment(mapEntryInterfaces, ',')
+	final String entryType = extractFirstTopLevelSegment.call(mapEntryInterfaces, ',')
 	final int mapEntryOpeningBrace = source.indexOf('{', mapEntryMatcher.start())
 	if (mapEntryOpeningBrace < 0) {
 		throw new GradleException("Cannot find MapEntry opening brace in ${javaFile}")
 	}
-	final String mapEntryBody = extractBracedBody(source, mapEntryOpeningBrace).body
+	final String mapEntryBody = extractBracedBody.call(source, mapEntryOpeningBrace).body
 	final String pooledMapEntryBody = mapEntryBody
 			.replaceAll(/(?m)\bMapEntry\s*\(/, "EntryView(")
 			.replaceAll(/\bkey\[/, "owner.key[")
 			.replaceAll(/\bvalue\[/, "owner.value[")
 			.replaceAll(/\bstrategy\b/, "owner.strategy")
+
+	final Map keyIteratorInner = extractInnerClassBody.call(source, "KeyIterator", javaFile)
+	def keyIteratorInterfaceMatcher = (keyIteratorInner.declaration =~ /implements\s+([^\{]+)\{/)
+	if (!keyIteratorInterfaceMatcher.find()) {
+		throw new GradleException("Cannot find KeyIterator interface declaration in ${javaFile}")
+	}
+	final String keyIteratorInterface = keyIteratorInterfaceMatcher.group(1).trim()
+	final Map keyIteratorMethod = parseIteratorMethodFromInnerClassBody.call(keyIteratorInner.body, javaFile, "KeyIterator")
+	final String keyZeroAllocIteratorType = buildElementZeroAllocIteratorType.call(keyTypeCap, keyIteratorMethod.returnType)
+	final boolean keyIteratorImplementsIterable = isReferenceTypeCap.call(keyTypeCap)
+
+	final Map valueIteratorInner = extractInnerClassBody.call(source, "ValueIterator", javaFile)
+	def valueIteratorInterfaceMatcher = (valueIteratorInner.declaration =~ /implements\s+([^\{]+)\{/)
+	if (!valueIteratorInterfaceMatcher.find()) {
+		throw new GradleException("Cannot find ValueIterator interface declaration in ${javaFile}")
+	}
+	final String valueIteratorInterface = valueIteratorInterfaceMatcher.group(1).trim()
+	final Map valueIteratorMethod = parseIteratorMethodFromInnerClassBody.call(valueIteratorInner.body, javaFile, "ValueIterator")
+	final String valueZeroAllocIteratorType = buildElementZeroAllocIteratorType.call(valueTypeCap, valueIteratorMethod.returnType)
+	final boolean valueIteratorImplementsIterable = isReferenceTypeCap.call(valueTypeCap)
 
 	String keyType = null
 	String keyIsNullExpression = null
@@ -205,6 +421,24 @@ def parseOpenHashMapMetadata = { File javaFile ->
 		pooledMapEntryBody: pooledMapEntryBody,
 		iteratorClass: iteratorClass,
 		iteratorTypeUse: iteratorTypeUse,
+		keyTypeCap: keyTypeCap,
+		valueTypeCap: valueTypeCap,
+		keyAccessor: keyAccessor,
+		valueAccessor: valueAccessor,
+		keyProjectionIteratorClass: keyProjectionIteratorClass,
+		valueProjectionIteratorClass: valueProjectionIteratorClass,
+		keyProjectionIteratorTypeUse: keyProjectionIteratorTypeUse,
+		valueProjectionIteratorTypeUse: valueProjectionIteratorTypeUse,
+		keyIteratorInterface: keyIteratorInterface,
+		valueIteratorInterface: valueIteratorInterface,
+		keyIteratorReturnType: keyIteratorMethod.returnType,
+		valueIteratorReturnType: valueIteratorMethod.returnType,
+		keyIteratorMethod: keyIteratorMethod.methodName,
+		valueIteratorMethod: valueIteratorMethod.methodName,
+		keyZeroAllocIteratorType: keyZeroAllocIteratorType,
+		valueZeroAllocIteratorType: valueZeroAllocIteratorType,
+		keyIteratorImplementsIterable: keyIteratorImplementsIterable,
+		valueIteratorImplementsIterable: valueIteratorImplementsIterable,
 		keyType: keyType,
 		keyIsNullExpression: keyIsNullExpression
 	]
@@ -221,7 +455,7 @@ ${meta.pooledMapEntryBody}
 	final String core = meta.linked ? """
 		private static final int NEXT_UNKNOWN = Integer.MIN_VALUE;
 		private static final int NEXT_NONE = -1;
-		private static final ThreadLocal<java.util.ArrayDeque<${meta.iteratorClass}>> POOL = ThreadLocal.withInitial(java.util.ArrayDeque::new);
+		private static final ThreadLocal<ArrayDeque<${meta.iteratorClass}>> POOL = ThreadLocal.withInitial(ArrayDeque::new);
 
 		private ${meta.ownerTypeUse} owner;
 		private final EntryView entry = new EntryView();
@@ -233,7 +467,7 @@ ${meta.pooledMapEntryBody}
 
 		@SuppressWarnings("unchecked")
 		static ${staticTypeParams}${meta.iteratorTypeUse} acquire(final ${meta.ownerTypeUse} owner) {
-			final java.util.ArrayDeque<${meta.iteratorClass}> pool = POOL.get();
+			final ArrayDeque<${meta.iteratorClass}> pool = POOL.get();
 			${meta.iteratorClass} iterator = pool.pollFirst();
 			if (iterator == null) iterator = new ${meta.iteratorClass}${meta.typeArgs}();
 			iterator.open(owner);
@@ -288,7 +522,7 @@ ${meta.pooledMapEntryBody}
 		}
 
 		@Override
-		public java.util.Iterator<${meta.entryType}> iterator() {
+		public it.unimi.dsi.fastutil.objects.ObjectIterator<${meta.entryType}> iterator() {
 			ensureOpenAndUnmodified();
 			return this;
 		}
@@ -306,7 +540,7 @@ ${entryView}
 """ : """
 		private static final int NEXT_UNKNOWN = Integer.MIN_VALUE;
 		private static final int NEXT_NONE = -1;
-		private static final ThreadLocal<java.util.ArrayDeque<${meta.iteratorClass}>> POOL = ThreadLocal.withInitial(java.util.ArrayDeque::new);
+		private static final ThreadLocal<ArrayDeque<${meta.iteratorClass}>> POOL = ThreadLocal.withInitial(ArrayDeque::new);
 
 		private ${meta.ownerTypeUse} owner;
 		private final EntryView entry = new EntryView();
@@ -319,7 +553,7 @@ ${entryView}
 
 		@SuppressWarnings("unchecked")
 		static ${staticTypeParams}${meta.iteratorTypeUse} acquire(final ${meta.ownerTypeUse} owner) {
-			final java.util.ArrayDeque<${meta.iteratorClass}> pool = POOL.get();
+			final ArrayDeque<${meta.iteratorClass}> pool = POOL.get();
 			${meta.iteratorClass} iterator = pool.pollFirst();
 			if (iterator == null) iterator = new ${meta.iteratorClass}${meta.typeArgs}();
 			iterator.open(owner);
@@ -383,7 +617,7 @@ ${entryView}
 		}
 
 		@Override
-		public java.util.Iterator<${meta.entryType}> iterator() {
+		public it.unimi.dsi.fastutil.objects.ObjectIterator<${meta.entryType}> iterator() {
 			ensureOpenAndUnmodified();
 			return this;
 		}
@@ -400,21 +634,23 @@ ${entryView}
 ${entryView}
 """
 
-	return """package ${meta.packageName};
+	return shortenQualifiedTypeReferences.call("""package ${meta.packageName};
 
+import it.unimi.dsi.fastutil.ZeroAllocIterator;
+import java.util.ArrayDeque;
 import java.util.NoSuchElementException;
 import java.util.Map;
 
 /** Reusable, zero-alloc entry iterator for {@link ${meta.ownerClass}}. */
-public final class ${meta.iteratorClass}${meta.typeDecl} implements java.util.Iterator<${meta.entryType}>, AutoCloseable, Iterable<${meta.entryType}> {
+public final class ${meta.iteratorClass}${meta.typeDecl} implements it.unimi.dsi.fastutil.objects.ObjectIterator<${meta.entryType}>, ZeroAllocIterator<${meta.entryType}> {
 ${core}
 }
-"""
+""", meta.packageName)
 }
 
 def injectZeroAllocIteratorApi = { File javaFile, Map meta ->
-	String source = meta.source
-	if (source.contains("poolZeroAllocIterator()") && source.contains(meta.iteratorClass)) {
+	String source = javaFile.getText("UTF-8")
+	if (source.contains("${meta.iteratorClass}.acquire(this)")) {
 		return false
 	}
 
@@ -434,6 +670,134 @@ def injectZeroAllocIteratorApi = { File javaFile, Map meta ->
 	}
 
 	source = source.substring(0, marker) + "\n\n" + zeroAllocMethods + "\n" + source.substring(marker)
+	javaFile.write(source, "UTF-8")
+	return true
+}
+
+def buildZeroAllocMapProjectionIteratorClassSource = { Map meta, String component ->
+	final boolean keyComponent = component == "key"
+	final String iteratorClass = keyComponent ? meta.keyProjectionIteratorClass : meta.valueProjectionIteratorClass
+	final String iteratorTypeUse = keyComponent ? meta.keyProjectionIteratorTypeUse : meta.valueProjectionIteratorTypeUse
+	final String iteratorInterface = keyComponent ? meta.keyIteratorInterface : meta.valueIteratorInterface
+	final String zeroAllocIteratorType = keyComponent ? meta.keyZeroAllocIteratorType : meta.valueZeroAllocIteratorType
+	final String nextReturnType = keyComponent ? meta.keyIteratorReturnType : meta.valueIteratorReturnType
+	final String nextMethod = keyComponent ? meta.keyIteratorMethod : meta.valueIteratorMethod
+	final boolean implementsIterable = keyComponent ? meta.keyIteratorImplementsIterable : meta.valueIteratorImplementsIterable
+	final String accessor = keyComponent ? meta.keyAccessor : meta.valueAccessor
+	final String staticTypeParams = meta.typeDecl ? meta.typeDecl + " " : ""
+	final String iterableIteratorType = implementsIterable ? "it.unimi.dsi.fastutil.objects.ObjectIterator<${nextReturnType}>" : iteratorInterface
+
+	return shortenQualifiedTypeReferences.call("""package ${meta.packageName};
+
+import java.util.ArrayDeque;
+
+/** Reusable, zero-alloc ${component} iterator for {@link ${meta.ownerClass}} views. */
+public final class ${iteratorClass}${meta.typeDecl} implements ${iterableIteratorType}, ${zeroAllocIteratorType} {
+	private static final ThreadLocal<ArrayDeque<${iteratorClass}>> POOL = ThreadLocal.withInitial(ArrayDeque::new);
+
+	private ${meta.iteratorTypeUse} entryIterator;
+	private boolean inUse;
+
+	@SuppressWarnings("unchecked")
+	static ${staticTypeParams}${iteratorTypeUse} acquire(final ${meta.ownerTypeUse} owner) {
+		final ArrayDeque<${iteratorClass}> pool = POOL.get();
+		${iteratorClass} iterator = pool.pollFirst();
+		if (iterator == null) iterator = new ${iteratorClass}${meta.typeArgs}();
+		iterator.open(owner);
+		return (${iteratorTypeUse})iterator;
+	}
+
+	void open(final ${meta.ownerTypeUse} owner) {
+		if (inUse) throw new IllegalStateException("Iterator already in use.");
+		entryIterator = ${meta.iteratorClass}.acquire(owner);
+		inUse = true;
+	}
+
+	private void ensureOpen() {
+		if (!inUse) throw new IllegalStateException("Iterator is not in use.");
+	}
+
+	@Override
+	public boolean hasNext() {
+		ensureOpen();
+		return entryIterator.hasNext();
+	}
+
+	@Override
+	public ${nextReturnType} ${nextMethod}() {
+		ensureOpen();
+		return entryIterator.next().${accessor};
+	}
+
+	@Override
+	public void remove() {
+		throw new UnsupportedOperationException("remove");
+	}
+${implementsIterable ? """
+	@Override
+	public ${iterableIteratorType} iterator() {
+		ensureOpen();
+		return this;
+	}
+""" : ""}
+	@Override
+	public void close() {
+		if (!inUse) throw new IllegalStateException("Iterator is not in use.");
+		inUse = false;
+		try {
+			entryIterator.close();
+		} finally {
+			entryIterator = null;
+			POOL.get().offerFirst(this);
+		}
+	}
+}
+""", meta.packageName)
+}
+
+def injectZeroAllocMapViewApi = { File javaFile, Map meta ->
+	String source = javaFile.getText("UTF-8")
+	if (source.contains(meta.keyProjectionIteratorClass) && source.contains(meta.valueProjectionIteratorClass)) {
+		return false
+	}
+
+	final String entrySetPoolMethod = """
+		@Override
+		public ${meta.iteratorTypeUse} poolZeroAllocIterator() {
+			return ${meta.ownerClass}.this.poolZeroAllocIterator();
+		}
+"""
+
+	final String keySetPoolMethod = """
+		@Override
+		public ${meta.keyProjectionIteratorTypeUse} poolZeroAllocIterator() {
+			return ${meta.keyProjectionIteratorClass}.acquire(${meta.ownerClass}.this);
+		}
+"""
+
+	final String valuesPoolMethod = """
+			@Override
+			public ${meta.valueProjectionIteratorTypeUse} poolZeroAllocIterator() {
+				return ${meta.valueProjectionIteratorClass}.acquire(${meta.ownerClass}.this);
+			}
+"""
+
+	final Map entrySetClass = extractInnerClassBody.call(source, "MapEntrySet", javaFile)
+	source = insertAfterOpeningBrace.call(source, entrySetClass.openingBrace, entrySetPoolMethod)
+
+	final Map keySetClass = extractInnerClassBody.call(source, "KeySet", javaFile)
+	source = insertAfterOpeningBrace.call(source, keySetClass.openingBrace, keySetPoolMethod)
+
+	def valuesMatcher = (source =~ /if \(values == null\) values = new [^\{]+\{/)
+	if (!valuesMatcher.find()) {
+		throw new GradleException("Cannot find values() anonymous collection in ${javaFile}")
+	}
+	final int valuesOpeningBrace = source.indexOf('{', valuesMatcher.start())
+	if (valuesOpeningBrace < 0) {
+		throw new GradleException("Cannot find values() anonymous collection opening brace in ${javaFile}")
+	}
+	source = insertAfterOpeningBrace.call(source, valuesOpeningBrace, valuesPoolMethod)
+
 	javaFile.write(source, "UTF-8")
 	return true
 }
@@ -476,7 +840,7 @@ def parseOpenHashSetMetadata = { File javaFile ->
 	final String ownerClass = javaFile.name.substring(0, javaFile.name.length() - ".java".length())
 	final boolean linked = ownerClass.contains("LinkedOpen")
 	final boolean big = ownerClass.endsWith("OpenHashBigSet")
-	final String iteratorClass = buildZeroAllocSetIteratorClassName(ownerClass)
+	final String iteratorClass = buildZeroAllocSetIteratorClassName.call(ownerClass)
 
 	def packageMatcher = (source =~ /(?m)^package\s+([a-zA-Z0-9_.]+);/)
 	if (!packageMatcher.find()) {
@@ -490,18 +854,7 @@ def parseOpenHashSetMetadata = { File javaFile ->
 	}
 	final String typeDecl = classDeclMatcher.group(1) ?: ""
 
-	String typeArgs = ""
-	if (typeDecl) {
-		def names = typeDecl.substring(1, typeDecl.length() - 1)
-				.split(",")
-				.collect { part ->
-					part.trim()
-							.replaceAll(/\s+extends\s+.*$/, "")
-							.replaceAll(/\s+super\s+.*$/, "")
-							.trim()
-				}
-		typeArgs = "<" + names.join(", ") + ">"
-	}
+	final String typeArgs = extractTypeArgsFromTypeDecl.call(typeDecl)
 
 	final String ownerTypeUse = ownerClass + typeArgs
 	final String iteratorTypeUse = iteratorClass + typeArgs
@@ -515,7 +868,7 @@ def parseOpenHashSetMetadata = { File javaFile ->
 	if (setIteratorOpeningBrace < 0) {
 		throw new GradleException("Cannot find SetIterator opening brace in ${javaFile}")
 	}
-	final String setIteratorBody = extractBracedBody(source, setIteratorOpeningBrace).body
+	final String setIteratorBody = extractBracedBody.call(source, setIteratorOpeningBrace).body
 	final String iteratorInterface = setIteratorInterfaceRaw.replace("ListIterator", "Iterator").trim()
 
 	def nextMethodMatcher = (setIteratorBody =~ /@Override\s+public\s+([A-Za-z0-9_<>, ?]+)\s+(next[A-Za-z0-9_]*)\(\)\s*\{/)
@@ -525,6 +878,8 @@ def parseOpenHashSetMetadata = { File javaFile ->
 	final String nextReturnType = nextMethodMatcher.group(1).trim()
 	final String nextMethod = nextMethodMatcher.group(2).trim()
 	final String iterableType = nextMethod == "next" ? nextReturnType : (primitiveToBoxedType[nextReturnType] ?: nextReturnType)
+	final boolean implementsIterable = nextMethod == "next"
+	final String zeroAllocIteratorType = implementsIterable ? "it.unimi.dsi.fastutil.ZeroAllocIterator<${nextReturnType}>" : buildPrimitiveZeroAllocIteratorType.call(primitiveToTypeCap[nextReturnType] ?: nextReturnType)
 
 	String keyType = null
 	String keyIsNullExpression = null
@@ -576,6 +931,8 @@ def parseOpenHashSetMetadata = { File javaFile ->
 		nextReturnType: nextReturnType,
 		nextMethod: nextMethod,
 		iterableType: iterableType,
+		implementsIterable: implementsIterable,
+		zeroAllocIteratorType: zeroAllocIteratorType,
 		keyType: keyType,
 		keyIsNullExpression: keyIsNullExpression,
 		bigElementType: bigElementType,
@@ -589,7 +946,7 @@ def buildZeroAllocSetIteratorClassSource = { Map meta ->
 	final String core = meta.linked ? """
 		private static final int NEXT_UNKNOWN = Integer.MIN_VALUE;
 		private static final int NEXT_NONE = -1;
-		private static final ThreadLocal<java.util.ArrayDeque<${meta.iteratorClass}>> POOL = ThreadLocal.withInitial(java.util.ArrayDeque::new);
+		private static final ThreadLocal<ArrayDeque<${meta.iteratorClass}>> POOL = ThreadLocal.withInitial(ArrayDeque::new);
 
 		private ${meta.ownerTypeUse} owner;
 
@@ -600,7 +957,7 @@ def buildZeroAllocSetIteratorClassSource = { Map meta ->
 
 		@SuppressWarnings("unchecked")
 		static ${staticTypeParams}${meta.iteratorTypeUse} acquire(final ${meta.ownerTypeUse} owner) {
-			final java.util.ArrayDeque<${meta.iteratorClass}> pool = POOL.get();
+			final ArrayDeque<${meta.iteratorClass}> pool = POOL.get();
 			${meta.iteratorClass} iterator = pool.pollFirst();
 			if (iterator == null) iterator = new ${meta.iteratorClass}${meta.typeArgs}();
 			iterator.open(owner);
@@ -653,11 +1010,13 @@ def buildZeroAllocSetIteratorClassSource = { Map meta ->
 			throw new UnsupportedOperationException("remove");
 		}
 
+${meta.implementsIterable ? """
 		@Override
-		public java.util.Iterator<${meta.iterableType}> iterator() {
+		public ${meta.iteratorInterface} iterator() {
 			ensureOpenAndUnmodified();
 			return this;
 		}
+""" : ""}
 
 		@Override
 		public void close() {
@@ -670,7 +1029,7 @@ def buildZeroAllocSetIteratorClassSource = { Map meta ->
 """ : (meta.big ? """
 		private static final long NEXT_UNKNOWN = Long.MIN_VALUE;
 		private static final long NEXT_NONE = -1L;
-		private static final ThreadLocal<java.util.ArrayDeque<${meta.iteratorClass}>> POOL = ThreadLocal.withInitial(java.util.ArrayDeque::new);
+		private static final ThreadLocal<ArrayDeque<${meta.iteratorClass}>> POOL = ThreadLocal.withInitial(ArrayDeque::new);
 
 		private ${meta.ownerTypeUse} owner;
 
@@ -682,7 +1041,7 @@ def buildZeroAllocSetIteratorClassSource = { Map meta ->
 
 		@SuppressWarnings("unchecked")
 		static ${staticTypeParams}${meta.iteratorTypeUse} acquire(final ${meta.ownerTypeUse} owner) {
-			final java.util.ArrayDeque<${meta.iteratorClass}> pool = POOL.get();
+			final ArrayDeque<${meta.iteratorClass}> pool = POOL.get();
 			${meta.iteratorClass} iterator = pool.pollFirst();
 			if (iterator == null) iterator = new ${meta.iteratorClass}${meta.typeArgs}();
 			iterator.open(owner);
@@ -746,11 +1105,13 @@ def buildZeroAllocSetIteratorClassSource = { Map meta ->
 			throw new UnsupportedOperationException("remove");
 		}
 
+${meta.implementsIterable ? """
 		@Override
-		public java.util.Iterator<${meta.iterableType}> iterator() {
+		public ${meta.iteratorInterface} iterator() {
 			ensureOpenAndUnmodified();
 			return this;
 		}
+""" : ""}
 
 		@Override
 		public void close() {
@@ -763,7 +1124,7 @@ def buildZeroAllocSetIteratorClassSource = { Map meta ->
 """ : """
 		private static final int NEXT_UNKNOWN = Integer.MIN_VALUE;
 		private static final int NEXT_NONE = -1;
-		private static final ThreadLocal<java.util.ArrayDeque<${meta.iteratorClass}>> POOL = ThreadLocal.withInitial(java.util.ArrayDeque::new);
+		private static final ThreadLocal<ArrayDeque<${meta.iteratorClass}>> POOL = ThreadLocal.withInitial(ArrayDeque::new);
 
 		private ${meta.ownerTypeUse} owner;
 
@@ -775,7 +1136,7 @@ def buildZeroAllocSetIteratorClassSource = { Map meta ->
 
 		@SuppressWarnings("unchecked")
 		static ${staticTypeParams}${meta.iteratorTypeUse} acquire(final ${meta.ownerTypeUse} owner) {
-			final java.util.ArrayDeque<${meta.iteratorClass}> pool = POOL.get();
+			final ArrayDeque<${meta.iteratorClass}> pool = POOL.get();
 			${meta.iteratorClass} iterator = pool.pollFirst();
 			if (iterator == null) iterator = new ${meta.iteratorClass}${meta.typeArgs}();
 			iterator.open(owner);
@@ -837,11 +1198,13 @@ def buildZeroAllocSetIteratorClassSource = { Map meta ->
 			throw new UnsupportedOperationException("remove");
 		}
 
+${meta.implementsIterable ? """
 		@Override
-		public java.util.Iterator<${meta.iterableType}> iterator() {
+		public ${meta.iteratorInterface} iterator() {
 			ensureOpenAndUnmodified();
 			return this;
 		}
+""" : ""}
 
 		@Override
 		public void close() {
@@ -853,20 +1216,21 @@ def buildZeroAllocSetIteratorClassSource = { Map meta ->
 		}
 """)
 
-	return """package ${meta.packageName};
+	return shortenQualifiedTypeReferences.call("""package ${meta.packageName};
 
+import java.util.ArrayDeque;
 import java.util.NoSuchElementException;
 
 /** Reusable, zero-alloc iterator for {@link ${meta.ownerClass}}. */
-public final class ${meta.iteratorClass}${meta.typeDecl} implements ${meta.iteratorInterface}, AutoCloseable, Iterable<${meta.iterableType}> {
+public final class ${meta.iteratorClass}${meta.typeDecl} implements ${meta.iteratorInterface}, ${meta.zeroAllocIteratorType} {
 ${core}
 }
-"""
+""", meta.packageName)
 }
 
 def injectZeroAllocSetIteratorApi = { File javaFile, Map meta ->
 	String source = meta.source
-	if (source.contains("poolZeroAllocIterator()") && source.contains(meta.iteratorClass)) {
+	if (source.contains("${meta.iteratorClass}.acquire(this)")) {
 		return false
 	}
 
@@ -893,6 +1257,114 @@ def injectZeroAllocSetIteratorApi = { File javaFile, Map meta ->
 	return true
 }
 
+def isGeneratedIterableFile = { File javaFile ->
+	final String name = javaFile.name
+	name.endsWith("Iterable.java") &&
+			!name.endsWith("BidirectionalIterable.java") &&
+			!name.endsWith("Iterables.java")
+}
+
+def patchGeneratedIterableZeroAllocApi = { File javaFile ->
+	String source = javaFile.getText("UTF-8")
+	if (source.contains("poolZeroAllocIterator()")) {
+		return false
+	}
+	def packageMatcher = (source =~ /(?m)^package\s+([a-zA-Z0-9_.]+);/)
+	if (!packageMatcher.find()) {
+		throw new GradleException("Cannot find package declaration in ${javaFile}")
+	}
+	final String packageName = packageMatcher.group(1)
+
+	final String simpleName = javaFile.name.substring(0, javaFile.name.length() - ".java".length())
+	if (simpleName == "ObjectIterable") {
+		if (!source.contains("import it.unimi.dsi.fastutil.ZeroAllocIterable;")) {
+			source = source.replace("import java.lang.Iterable;\n", "import java.lang.Iterable;\nimport it.unimi.dsi.fastutil.ZeroAllocIterable;\n")
+		}
+		source = source.replace("public interface ObjectIterable<K> extends Iterable<K> {", "public interface ObjectIterable<K> extends Iterable<K>, ZeroAllocIterable<K> {")
+		source = source.replace("\t@Override\n\tObjectIterator<K> iterator();\n", """\t@Override
+\tObjectIterator<K> iterator();
+
+\t@Override
+	\tdefault it.unimi.dsi.fastutil.ZeroAllocIterator<K> poolZeroAllocIterator() {
+	\t\treturn it.unimi.dsi.fastutil.ZeroAllocIterable.wrap(this);
+	\t}
+	""")
+		source = shortenQualifiedTypeReferences.call(source, packageName)
+		javaFile.write(source, "UTF-8")
+		return true
+	}
+
+	final String typeCap = simpleName.substring(0, simpleName.length() - "Iterable".length())
+	source = source.replace("public interface ${simpleName} extends Iterable<${primitiveToBoxedType[typeCap.toLowerCase()]}> {", "public interface ${simpleName} extends Iterable<${primitiveToBoxedType[typeCap.toLowerCase()]}>, ${typeCap}ZeroAllocIterable {")
+	source = source.replace("\t@Override\n\t${typeCap}Iterator iterator();\n", """\t@Override
+\t${typeCap}Iterator iterator();
+
+\t@Override
+	\tdefault ${typeCap}ZeroAllocIterator poolZeroAllocIterator() {
+	\t\treturn ${typeCap}ZeroAllocIterable.wrap(this);
+	\t}
+	""")
+	source = shortenQualifiedTypeReferences.call(source, packageName)
+	javaFile.write(source, "UTF-8")
+	return true
+}
+
+def isGeneratedMapInterfaceFile = { File javaFile ->
+	final String name = javaFile.name
+	name.contains("2") &&
+			name.endsWith("Map.java") &&
+			!name.endsWith("SortedMap.java") &&
+			!name.startsWith("Abstract")
+}
+
+def patchGeneratedMapInterfaceZeroAllocApi = { File javaFile ->
+	String source = javaFile.getText("UTF-8")
+	if (!source.contains("public interface ")) return false
+	if (source.contains("extends ZeroAllocIterable<") || source.contains("poolZeroAllocIterator()")) return false
+
+	def packageMatcher = (source =~ /(?m)^package\s+([a-zA-Z0-9_.]+);/)
+	if (!packageMatcher.find()) {
+		throw new GradleException("Cannot find package declaration in ${javaFile}")
+	}
+	final String packageName = packageMatcher.group(1)
+
+	def interfaceMatcher = (source =~ /public interface ([A-Za-z0-9_]+(?:<[^>]+>)?) extends ([^\{]+)\{/)
+	if (!interfaceMatcher.find()) {
+		return false
+	}
+	final String interfaceDecl = interfaceMatcher.group(0)
+	final String extendsClause = interfaceMatcher.group(2).trim()
+	if (!extendsClause.contains("Map<")) return false
+
+	def entrySetMatcher = (source =~ /(?m)^\s*ObjectSet<([^;\n]+?)>\s+([A-Za-z0-9]+EntrySet)\(\);\s*$/)
+	if (!entrySetMatcher.find()) {
+		return false
+	}
+	final String entryType = entrySetMatcher.group(1).trim()
+	final String entrySetMethod = entrySetMatcher.group(2).trim()
+
+	final String patchedInterfaceDecl = interfaceDecl.replace(extendsClause, extendsClause + ", it.unimi.dsi.fastutil.ZeroAllocIterable<" + entryType + ">")
+	source = source.substring(0, interfaceMatcher.start()) + patchedInterfaceDecl + source.substring(interfaceMatcher.end())
+
+	final String zeroAllocMethods = """
+
+	@Override
+	default it.unimi.dsi.fastutil.objects.ObjectIterator<${entryType}> iterator() {
+		return ${entrySetMethod}().iterator();
+	}
+
+	@Override
+	default it.unimi.dsi.fastutil.ZeroAllocIterator<${entryType}> poolZeroAllocIterator() {
+		return ${entrySetMethod}().poolZeroAllocIterator();
+	}
+"""
+
+	source = source.substring(0, entrySetMatcher.end()) + zeroAllocMethods + source.substring(entrySetMatcher.end())
+	source = shortenQualifiedTypeReferences.call(source, packageName)
+	javaFile.write(source, "UTF-8")
+	return true
+}
+
 def replaceFirstMethod = { String source, def signatureRegex, String replacement, File javaFile, String description ->
 	def matcher = (source =~ signatureRegex)
 	if (!matcher.find()) {
@@ -903,7 +1375,7 @@ def replaceFirstMethod = { String source, def signatureRegex, String replacement
 	if (openingBrace < 0) {
 		throw new GradleException("Cannot find opening brace for ${description} in ${javaFile}")
 	}
-	final Map methodBody = extractBracedBody(source, openingBrace)
+	final Map methodBody = extractBracedBody.call(source, openingBrace)
 	return source.substring(0, start) + replacement + source.substring(methodBody.closingIndex + 1)
 }
 
@@ -1105,7 +1577,7 @@ default void sort(final ${comparatorType} comparator) {
 		sort((${comparatorType})null, buffer);
 	}
 """
-		source = replaceFirstMethod(
+		source = replaceFirstMethod.call(
 			source,
 			/default void sort\(final [A-Za-z0-9_]+Comparator comparator\)\s*\{/,
 			injectedMethods,
@@ -1145,7 +1617,7 @@ default void sort(final ${comparatorType} comparator) {
 		sort(null, buffer);
 	}
 """
-		source = replaceFirstMethod(
+		source = replaceFirstMethod.call(
 			source,
 			/default void sort\(final java\.util\.Comparator<\? super [^>]+> comparator\)\s*\{/,
 			injectedMethods,
@@ -1231,7 +1703,7 @@ public void sort(final ${comparatorType} comp) {
 	}
 """
 
-	source = replaceFirstMethod(
+	source = replaceFirstMethod.call(
 		source,
 		/public void sort\(final [^)]+ comp\)\s*\{/,
 		sortMethods,
@@ -1286,48 +1758,71 @@ tasks.register("prepareFallbackSources", Sync) {
 	doLast {
 		int patchedMaps = 0
 		int generatedMapIterators = 0
+		int generatedMapProjectionIterators = 0
 		int patchedSets = 0
 		int generatedSetIterators = 0
+		int patchedIterables = 0
+		int patchedMapInterfaces = 0
 		int patchedArrays = 0
 		int patchedListInterfaces = 0
 		int patchedArrayLists = 0
 		fileTree(destinationDir).matching { include("**/*.java") }.files.each { File javaFile ->
-			if (isGeneratedOpenHashMapFile(javaFile)) {
-				final Map meta = parseOpenHashMapMetadata(javaFile)
-				if (injectZeroAllocIteratorApi(javaFile, meta)) {
+			if (isGeneratedOpenHashMapFile.call(javaFile)) {
+				final Map meta = parseOpenHashMapMetadata.call(javaFile)
+				if (injectZeroAllocIteratorApi.call(javaFile, meta)) {
+					patchedMaps++
+				}
+				if (injectZeroAllocMapViewApi.call(javaFile, meta)) {
 					patchedMaps++
 				}
 				final File iteratorFile = new File(javaFile.parentFile, "${meta.iteratorClass}.java")
-				iteratorFile.write(buildZeroAllocIteratorClassSource(meta), "UTF-8")
+				iteratorFile.write(buildZeroAllocIteratorClassSource.call(meta), "UTF-8")
 				generatedMapIterators++
+				final File keyIteratorFile = new File(javaFile.parentFile, "${meta.keyProjectionIteratorClass}.java")
+				keyIteratorFile.write(buildZeroAllocMapProjectionIteratorClassSource.call(meta, "key"), "UTF-8")
+				final File valueIteratorFile = new File(javaFile.parentFile, "${meta.valueProjectionIteratorClass}.java")
+				valueIteratorFile.write(buildZeroAllocMapProjectionIteratorClassSource.call(meta, "value"), "UTF-8")
+				generatedMapProjectionIterators += 2
 			}
-			if (isGeneratedOpenHashSetFile(javaFile)) {
-				final Map meta = parseOpenHashSetMetadata(javaFile)
-				if (injectZeroAllocSetIteratorApi(javaFile, meta)) {
+			if (isGeneratedOpenHashSetFile.call(javaFile)) {
+				final Map meta = parseOpenHashSetMetadata.call(javaFile)
+				if (injectZeroAllocSetIteratorApi.call(javaFile, meta)) {
 					patchedSets++
 				}
 				final File iteratorFile = new File(javaFile.parentFile, "${meta.iteratorClass}.java")
-				iteratorFile.write(buildZeroAllocSetIteratorClassSource(meta), "UTF-8")
+				iteratorFile.write(buildZeroAllocSetIteratorClassSource.call(meta), "UTF-8")
 				generatedSetIterators++
 			}
-			if (isGeneratedArraysFile(javaFile)) {
-				if (patchGeneratedArraysStableSort(javaFile)) {
+			if (isGeneratedIterableFile.call(javaFile)) {
+				if (patchGeneratedIterableZeroAllocApi.call(javaFile)) {
+					patchedIterables++
+				}
+			}
+			if (isGeneratedMapInterfaceFile.call(javaFile)) {
+				if (patchGeneratedMapInterfaceZeroAllocApi.call(javaFile)) {
+					patchedMapInterfaces++
+				}
+			}
+			if (isGeneratedArraysFile.call(javaFile)) {
+				if (patchGeneratedArraysStableSort.call(javaFile)) {
 					patchedArrays++
 				}
 			}
-			if (isGeneratedListInterfaceFile(javaFile)) {
-				if (patchGeneratedListSortApi(javaFile)) {
+			if (isGeneratedListInterfaceFile.call(javaFile)) {
+				if (patchGeneratedListSortApi.call(javaFile)) {
 					patchedListInterfaces++
 				}
 			}
-			if (isGeneratedArrayListFile(javaFile)) {
-				if (patchGeneratedArrayListSortApi(javaFile)) {
+			if (isGeneratedArrayListFile.call(javaFile)) {
+				if (patchGeneratedArrayListSortApi.call(javaFile)) {
 					patchedArrayLists++
 				}
 			}
 		}
-		logger.lifecycle("Injected allocation-free iterator API into ${patchedMaps} generated OpenHashMap classes and generated ${generatedMapIterators} map iterator classes.")
+		logger.lifecycle("Injected allocation-free iterator API into ${patchedMaps} generated OpenHashMap classes and generated ${generatedMapIterators} entry iterator classes plus ${generatedMapProjectionIterators} key/value iterator classes.")
 		logger.lifecycle("Injected allocation-free iterator API into ${patchedSets} generated OpenHashSet classes and generated ${generatedSetIterators} set iterator classes.")
+		logger.lifecycle("Injected allocation-free iterable hierarchy into ${patchedIterables} generated *Iterable interfaces.")
+		logger.lifecycle("Injected allocation-free iterable hierarchy into ${patchedMapInterfaces} generated *Map interfaces.")
 		logger.lifecycle("Injected allocation-free stable-sort support into ${patchedArrays} generated *Arrays classes.")
 		logger.lifecycle("Injected allocation-free list sort API into ${patchedListInterfaces} generated *List interfaces and ${patchedArrayLists} generated *ArrayList classes.")
 	}

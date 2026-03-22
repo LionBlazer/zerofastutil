@@ -10,6 +10,9 @@ import org.junit.Test;
 
 import com.sun.management.ThreadMXBean;
 
+import it.unimi.dsi.fastutil.ZeroAllocIterable;
+import it.unimi.dsi.fastutil.ZeroAllocIterator;
+
 public class Object2IntOpenHashMapZeroAllocIteratorTest {
 
 	@Test
@@ -26,6 +29,15 @@ public class Object2IntOpenHashMapZeroAllocIteratorTest {
 			}
 		}
 		assertEquals(9, seen);
+	}
+
+	@Test
+	public void testMapImplementsZeroAllocIterableOfEntries() {
+		final Object2IntMap<String> map = new Object2IntOpenHashMap<String>();
+		map.put("aa", 10);
+		map.put("bbbb", 20);
+
+		assertEquals(36, sumEntries(map));
 	}
 
 	@Test
@@ -69,6 +81,18 @@ public class Object2IntOpenHashMapZeroAllocIteratorTest {
 	private static long iterateAll(final Object2IntOpenHashMap<String> map) {
 		long sum = 0;
 		try (ZeroAllocEntryIteratorObject2Int<String> it = map.poolZeroAllocIterator()) {
+			while (it.hasNext()) {
+				final Object2IntMap.Entry<String> entry = it.next();
+				sum += entry.getKey().length();
+				sum += entry.getIntValue();
+			}
+		}
+		return sum;
+	}
+
+	private static int sumEntries(final ZeroAllocIterable<Object2IntMap.Entry<String>> iterable) {
+		int sum = 0;
+		try (ZeroAllocIterator<Object2IntMap.Entry<String>> it = iterable.poolZeroAllocIterator()) {
 			while (it.hasNext()) {
 				final Object2IntMap.Entry<String> entry = it.next();
 				sum += entry.getKey().length();
