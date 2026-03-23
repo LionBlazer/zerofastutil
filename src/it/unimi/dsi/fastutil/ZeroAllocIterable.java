@@ -4,7 +4,7 @@ import java.util.ArrayDeque;
 import java.util.Iterator;
 import java.util.Objects;
 
-public interface ZeroAllocIterable<K> extends Iterable<K> {
+public interface ZeroAllocIterable<K> {
 	ZeroAllocIterator<K> poolZeroAllocIterator();
 
 	static <K> ZeroAllocIterator<K> wrap(final Iterable<? extends K> iterable) {

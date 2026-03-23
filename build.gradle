@@ -1410,12 +1410,6 @@ def patchGeneratedMapInterfaceZeroAllocApi = { File javaFile ->
 
 	final String zeroAllocMethods = """
 
-	@Override
-	default it.unimi.dsi.fastutil.objects.ObjectIterator<${entryType}> iterator() {
-		return ${entrySetMethod}().iterator();
-	}
-
-	@Override
 	default it.unimi.dsi.fastutil.ZeroAllocIterator<${entryType}> poolZeroAllocIterator() {
 		return ${entrySetMethod}().poolZeroAllocIterator();
 	}
