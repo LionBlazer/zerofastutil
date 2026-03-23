@@ -323,6 +323,21 @@ def normalizeZeroAllocIteratorInterface = { String iteratorInterface ->
 			.replace("ListIterator", "Iterator")
 }
 
+def buildArrayListZeroAllocIteratorClassName = { String ownerClass ->
+	"ZeroAllocIterator${ownerClass}"
+}
+
+def typeCapToPrimitiveType = [
+	Boolean: "boolean",
+	Byte   : "byte",
+	Char   : "char",
+	Double : "double",
+	Float  : "float",
+	Int    : "int",
+	Long   : "long",
+	Short  : "short"
+]
+
 def insertAfterOpeningBrace = { String source, int openingBraceIndex, String insertion ->
 	source.substring(0, openingBraceIndex + 1) + "\n" + insertion + source.substring(openingBraceIndex + 1)
 }
@@ -1688,6 +1703,149 @@ def isGeneratedArrayListFile = { File javaFile ->
 			!name.endsWith("ArrayFrontCodedList.java")
 }
 
+def parseArrayListMetadata = { File javaFile ->
+	final String source = javaFile.getText("UTF-8")
+	final String ownerClass = javaFile.name.substring(0, javaFile.name.length() - ".java".length())
+	final String iteratorClass = buildArrayListZeroAllocIteratorClassName.call(ownerClass)
+
+	def packageMatcher = (source =~ /(?m)^package\s+([a-zA-Z0-9_.]+);/)
+	if (!packageMatcher.find()) {
+		throw new GradleException("Cannot find package declaration in ${javaFile}")
+	}
+	final String packageName = packageMatcher.group(1)
+	final String packageLeaf = packageName.substring(packageName.lastIndexOf('.') + 1)
+
+	def classDeclMatcher = (source =~ ("public class\\s+" + java.util.regex.Pattern.quote(ownerClass) + "\\s*(<[^>]+>)?\\s+extends"))
+	if (!classDeclMatcher.find()) {
+		throw new GradleException("Cannot find class declaration for ${ownerClass} in ${javaFile}")
+	}
+	final String typeDecl = classDeclMatcher.group(1) ?: ""
+	final String typeArgs = extractTypeArgsFromTypeDecl.call(typeDecl)
+	final String ownerTypeUse = ownerClass + typeArgs
+	final String iteratorTypeUse = iteratorClass + typeArgs
+
+	def listIteratorMatcher = (source =~ /public\s+([A-Za-z0-9_<>, ?]+)\s+listIterator\(final int index\)\s*\{/)
+	if (!listIteratorMatcher.find()) {
+		throw new GradleException("Cannot find listIterator(int) declaration in ${javaFile}")
+	}
+	final String iteratorInterface = normalizeZeroAllocIteratorInterface.call(listIteratorMatcher.group(1).trim())
+
+	final boolean objectLike = packageLeaf == "objects"
+	final String typeCap = objectLike ? "Object" : packageLeaf.substring(0, packageLeaf.length() - 1).capitalize()
+	final String zeroAllocIteratorType = objectLike ? "it.unimi.dsi.fastutil.ZeroAllocIterator<${typeArgs ? typeArgs.substring(1, typeArgs.length() - 1).trim() : "Object"}>" : buildPrimitiveZeroAllocIteratorType.call(typeCap)
+	final String nextReturnType = objectLike ? (typeArgs ? typeArgs.substring(1, typeArgs.length() - 1).trim() : "Object") : typeCapToPrimitiveType[typeCap]
+	final String nextMethod = objectLike ? "next" : "next${typeCap}"
+
+	[
+		ownerClass: ownerClass,
+		iteratorClass: iteratorClass,
+		packageName: packageName,
+		typeDecl: typeDecl,
+		typeArgs: typeArgs,
+		ownerTypeUse: ownerTypeUse,
+		iteratorTypeUse: iteratorTypeUse,
+		iteratorInterface: iteratorInterface,
+		zeroAllocIteratorType: zeroAllocIteratorType,
+		nextReturnType: nextReturnType,
+		nextMethod: nextMethod
+	]
+}
+
+def buildArrayListZeroAllocIteratorClassSource = { Map meta ->
+	final String staticTypeParams = meta.typeDecl ? meta.typeDecl + " " : ""
+
+	return shortenQualifiedTypeReferences.call("""package ${meta.packageName};
+
+import java.util.ArrayDeque;
+import java.util.NoSuchElementException;
+
+/** Reusable, zero-alloc iterator for {@link ${meta.ownerClass}}. */
+public final class ${meta.iteratorClass}${meta.typeDecl} implements ${meta.iteratorInterface}, ${meta.zeroAllocIteratorType} {
+	private static final ThreadLocal<ArrayDeque<${meta.iteratorClass}>> POOL = ThreadLocal.withInitial(ArrayDeque::new);
+
+	private ${meta.ownerTypeUse} owner;
+	private boolean inUse;
+	private int expectedSize;
+	private int index;
+
+	@SuppressWarnings("unchecked")
+	static ${staticTypeParams}${meta.iteratorTypeUse} acquire(final ${meta.ownerTypeUse} owner) {
+		final ArrayDeque<${meta.iteratorClass}> pool = POOL.get();
+		${meta.iteratorClass} iterator = pool.pollFirst();
+		if (iterator == null) iterator = new ${meta.iteratorClass}${meta.typeArgs}();
+		iterator.open(owner);
+		return (${meta.iteratorTypeUse})iterator;
+	}
+
+	void open(final ${meta.ownerTypeUse} owner) {
+		if (inUse) throw new IllegalStateException("Iterator already in use.");
+		this.owner = owner;
+		inUse = true;
+		expectedSize = owner.size;
+		index = 0;
+	}
+
+	private void ensureOpenAndUnmodified() {
+		if (!inUse) throw new IllegalStateException("Iterator is not in use.");
+		if (expectedSize != owner.size) throw new IllegalStateException("List was structurally modified during zero-alloc iteration.");
+	}
+
+	@Override
+	public boolean hasNext() {
+		ensureOpenAndUnmodified();
+		return index < owner.size;
+	}
+
+	@Override
+	public ${meta.nextReturnType} ${meta.nextMethod}() {
+		ensureOpenAndUnmodified();
+		if (index >= owner.size) throw new NoSuchElementException();
+		return owner.a[index++];
+	}
+
+	@Override
+	public void remove() {
+		throw new UnsupportedOperationException("remove");
+	}
+
+	@Override
+	public void close() {
+		if (!inUse) throw new IllegalStateException("Iterator is not in use.");
+		inUse = false;
+		index = 0;
+		owner = null;
+		POOL.get().offerFirst(this);
+	}
+}
+""", meta.packageName)
+}
+
+def injectArrayListZeroAllocIteratorApi = { File javaFile, Map meta ->
+	String source = javaFile.getText("UTF-8")
+	if (source.contains("${meta.iteratorClass}.acquire(this)")) {
+		return false
+	}
+
+	final String zeroAllocMethods = """
+	/** Borrows a zero-alloc pooled iterator.
+	 *
+	 * <p>The iterator must be closed after use to return it back to the current thread pool.
+	 */
+	public ${meta.iteratorTypeUse} poolZeroAllocIterator() {
+		return ${meta.iteratorClass}.acquire(this);
+	}
+"""
+
+	def markerMatcher = (source =~ /(?m)^\t@Override\s*\n\tpublic [A-Za-z0-9_<>, ?]+\s+listIterator\(final int index\)\s*\{/)
+	if (!markerMatcher.find()) {
+		throw new GradleException("Cannot find listIterator(int) section in ${javaFile}")
+	}
+
+	source = source.substring(0, markerMatcher.start()) + zeroAllocMethods + "\n" + source.substring(markerMatcher.start())
+	javaFile.write(source, "UTF-8")
+	return true
+}
+
 def patchGeneratedArrayListSortApi = { File javaFile ->
 	String source = javaFile.getText("UTF-8")
 	if (source.contains("sortWithBuffer(")) {
@@ -1817,6 +1975,7 @@ tasks.register("prepareFallbackSources", Sync) {
 		int patchedArrays = 0
 		int patchedListInterfaces = 0
 		int patchedArrayLists = 0
+		int generatedArrayListIterators = 0
 		fileTree(destinationDir).matching { include("**/*.java") }.files.each { File javaFile ->
 			if (isGeneratedOpenHashMapFile.call(javaFile)) {
 				final Map meta = parseOpenHashMapMetadata.call(javaFile)
@@ -1871,6 +2030,13 @@ tasks.register("prepareFallbackSources", Sync) {
 				}
 			}
 			if (isGeneratedArrayListFile.call(javaFile)) {
+				final Map meta = parseArrayListMetadata.call(javaFile)
+				if (injectArrayListZeroAllocIteratorApi.call(javaFile, meta)) {
+					patchedArrayLists++
+				}
+				final File iteratorFile = new File(javaFile.parentFile, "${meta.iteratorClass}.java")
+				iteratorFile.write(buildArrayListZeroAllocIteratorClassSource.call(meta), "UTF-8")
+				generatedArrayListIterators++
 				if (patchGeneratedArrayListSortApi.call(javaFile)) {
 					patchedArrayLists++
 				}
@@ -1881,7 +2047,7 @@ tasks.register("prepareFallbackSources", Sync) {
 		logger.lifecycle("Injected allocation-free iterable hierarchy into ${patchedIterables} generated *Iterable interfaces.")
 		logger.lifecycle("Injected allocation-free iterable hierarchy into ${patchedMapInterfaces} generated *Map interfaces.")
 		logger.lifecycle("Injected allocation-free stable-sort support into ${patchedArrays} generated *Arrays classes.")
-		logger.lifecycle("Injected allocation-free list sort API into ${patchedListInterfaces} generated *List interfaces and ${patchedArrayLists} generated *ArrayList classes.")
+		logger.lifecycle("Injected allocation-free list sort API into ${patchedListInterfaces} generated *List interfaces and ${patchedArrayLists} generated *ArrayList classes, plus ${generatedArrayListIterators} generated pooled ArrayList iterator classes.")
 	}
 }
 
