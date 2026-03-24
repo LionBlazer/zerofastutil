@@ -886,9 +886,6 @@ def buildZeroAllocSetIteratorClassName = { String ownerClass ->
 		throw new GradleException("Unsupported OpenHashSet owner class: ${ownerClass}")
 	}
 
-	if (baseName == "Object" && variantSuffix.isEmpty()) {
-		return "ZeroAllocIterator"
-	}
 	return "ZeroAllocIterator${baseName}${variantSuffix}"
 }
 
@@ -942,6 +939,7 @@ def parseOpenHashSetMetadata = { File javaFile ->
 	final String iterableType = nextMethod == "next" ? nextReturnType : (primitiveToBoxedType[nextReturnType] ?: nextReturnType)
 	final boolean implementsIterable = nextMethod == "next"
 	final String zeroAllocIteratorType = implementsIterable ? "it.unimi.dsi.fastutil.ZeroAllocIterator<${nextReturnType}>" : buildPrimitiveZeroAllocIteratorType.call(primitiveToTypeCap[nextReturnType] ?: nextReturnType)
+	final String publicIteratorTypeUse = implementsIterable ? zeroAllocIteratorType : iteratorTypeUse
 
 	String keyType = null
 	String keyIsNullExpression = null
@@ -989,6 +987,7 @@ def parseOpenHashSetMetadata = { File javaFile ->
 		ownerTypeUse: ownerTypeUse,
 		iteratorClass: iteratorClass,
 		iteratorTypeUse: iteratorTypeUse,
+		publicIteratorTypeUse: publicIteratorTypeUse,
 		iteratorInterface: iteratorInterface,
 		nextReturnType: nextReturnType,
 		nextMethod: nextMethod,
@@ -1727,6 +1726,7 @@ def parseArrayListMetadata = { File javaFile ->
 	final boolean objectLike = packageLeaf == "objects"
 	final String typeCap = objectLike ? "Object" : packageLeaf.substring(0, packageLeaf.length() - 1).capitalize()
 	final String zeroAllocIteratorType = objectLike ? "it.unimi.dsi.fastutil.ZeroAllocIterator<${typeArgs ? typeArgs.substring(1, typeArgs.length() - 1).trim() : "Object"}>" : buildPrimitiveZeroAllocIteratorType.call(typeCap)
+	final String publicIteratorTypeUse = zeroAllocIteratorType
 	final String nextReturnType = objectLike ? (typeArgs ? typeArgs.substring(1, typeArgs.length() - 1).trim() : "Object") : typeCapToPrimitiveType[typeCap]
 	final String nextMethod = objectLike ? "next" : "next${typeCap}"
 
@@ -1738,6 +1738,7 @@ def parseArrayListMetadata = { File javaFile ->
 		typeArgs: typeArgs,
 		ownerTypeUse: ownerTypeUse,
 		iteratorTypeUse: iteratorTypeUse,
+		publicIteratorTypeUse: publicIteratorTypeUse,
 		iteratorInterface: iteratorInterface,
 		zeroAllocIteratorType: zeroAllocIteratorType,
 		nextReturnType: nextReturnType,
@@ -1825,7 +1826,7 @@ def injectArrayListZeroAllocIteratorApi = { File javaFile, Map meta ->
 	 *
 	 * <p>The iterator must be closed after use to return it back to the current thread pool.
 	 */
-	public ${meta.iteratorTypeUse} poolZeroAllocIterator() {
+	public ${meta.publicIteratorTypeUse} poolZeroAllocIterator() {
 		return ${meta.iteratorClass}.acquire(this);
 	}
 """

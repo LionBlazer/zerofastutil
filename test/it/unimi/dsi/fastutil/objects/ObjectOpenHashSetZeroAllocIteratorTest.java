@@ -19,7 +19,7 @@ public class ObjectOpenHashSetZeroAllocIteratorTest {
 		set.add("bb");
 
 		int totalLength = 0;
-		try (ZeroAllocIterator<String> it = set.poolZeroAllocIterator()) {
+		try (it.unimi.dsi.fastutil.ZeroAllocIterator<String> it = set.poolZeroAllocIterator()) {
 			for (String value : it) {
 				totalLength += value.length();
 			}
@@ -32,7 +32,7 @@ public class ObjectOpenHashSetZeroAllocIteratorTest {
 		final ObjectOpenHashSet<String> set = new ObjectOpenHashSet<String>();
 		set.add("one");
 		set.add("two");
-		try (ZeroAllocIterator<String> it = set.poolZeroAllocIterator()) {
+		try (it.unimi.dsi.fastutil.ZeroAllocIterator<String> it = set.poolZeroAllocIterator()) {
 			set.add("three");
 			try {
 				it.hasNext();
@@ -68,11 +68,46 @@ public class ObjectOpenHashSetZeroAllocIteratorTest {
 		assertEquals(0L, sink & 1L);
 	}
 
+	@Test
+	public void testZeroAllocationViaPublicZeroAllocIteratorEnhancedForLoop() {
+		final ThreadMXBean threadMxBean = allocationThreadMxBean();
+		Assume.assumeTrue(threadMxBean != null);
+
+		final ObjectOpenHashSet<String> set = new ObjectOpenHashSet<String>(512);
+		for (int i = 0; i < 512; i++) {
+			set.add(Integer.toString(i));
+		}
+
+		long sink = 0;
+		for (int i = 0; i < 20000; i++) {
+			sink += iterateAllViaPublicApiEnhancedFor(set);
+		}
+
+		final long threadId = Thread.currentThread().getId();
+		final long before = threadMxBean.getThreadAllocatedBytes(threadId);
+		for (int i = 0; i < 50000; i++) {
+			sink += iterateAllViaPublicApiEnhancedFor(set);
+		}
+		final long allocated = threadMxBean.getThreadAllocatedBytes(threadId) - before;
+		assertEquals("Expected zero allocations through public ZeroAllocIterator API, but got " + allocated + " bytes", 0L, allocated);
+		assertEquals(0L, sink & 1L);
+	}
+
 	private static long iterateAll(final ObjectOpenHashSet<String> set) {
 		long sum = 0;
-		try (ZeroAllocIterator<String> it = set.poolZeroAllocIterator()) {
+		try (it.unimi.dsi.fastutil.ZeroAllocIterator<String> it = set.poolZeroAllocIterator()) {
 			while (it.hasNext()) {
 				sum += it.next().length();
+			}
+		}
+		return sum;
+	}
+
+	private static long iterateAllViaPublicApiEnhancedFor(final ObjectOpenHashSet<String> set) {
+		long sum = 0;
+		try (it.unimi.dsi.fastutil.ZeroAllocIterator<String> it = set.poolZeroAllocIterator()) {
+			for (final String value : it) {
+				sum += value.length();
 			}
 		}
 		return sum;
